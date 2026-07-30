@@ -1,0 +1,36 @@
+[White Balance]
+Enabled=true
+TemperatureBias=300
+
+[Luminance Curve]
+Enabled=true
+Contrast=-4
+
+[Vibrance]
+Enabled=true
+Saturated=6
+Pastels=8
+
+[ColorToning]
+Enabled=true
+Method=Splitco
+Lumamode=true
+Redlow=4
+Greenlow=0
+Bluelow=-4
+Redmed=0
+Greenmed=0
+Bluemed=0
+Redhigh=14
+Greenhigh=6
+Bluehigh=-10
+Strength=40
+Autosat=true
+SatProtectionThreshold=30
+SaturatedOpacity=80
+
+[PCVignette]
+Enabled=true
+Strength=1
+Feather=70
+Roundness=50

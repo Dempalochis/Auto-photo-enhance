@@ -1,0 +1,14 @@
+[White Balance]
+Enabled=true
+TemperatureBias=80
+
+[Exposure]
+Black=2
+
+[Vibrance]
+Enabled=true
+Pastels=4
+Saturated=3
+ProtectSkins=true
+AvoidColorShift=true
+PastSatTog=true

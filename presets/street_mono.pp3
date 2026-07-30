@@ -1,0 +1,34 @@
+[Black & White]
+Enabled=true
+Method=ChannelMixer
+Auto=false
+ComplementaryColors=true
+Setting=RGB-Rel
+Filter=None
+MixerRed=40
+MixerOrange=25
+MixerYellow=15
+MixerGreen=10
+MixerCyan=-10
+MixerBlue=-30
+MixerMagenta=15
+MixerPurple=15
+GammaRed=0
+GammaGreen=0
+GammaBlue=0
+Algorithm=SP
+LuminanceCurve=0;
+BeforeCurveMode=Standard
+AfterCurveMode=Standard
+BeforeCurve=0;
+AfterCurve=0;
+
+[Luminance Curve]
+Enabled=true
+Contrast=22
+
+[PCVignette]
+Enabled=true
+Strength=1
+Feather=40
+Roundness=50

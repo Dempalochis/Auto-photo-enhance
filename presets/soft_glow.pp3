@@ -1,0 +1,13 @@
+[White Balance]
+Enabled=true
+TemperatureBias=150
+
+[Luminance Curve]
+Enabled=true
+Contrast=-6
+LCurve=3;0;0;0.15;0.3;0.75;0.85;1;1;
+
+[Vibrance]
+Enabled=true
+Pastels=10
+Saturated=-8

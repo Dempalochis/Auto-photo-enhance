@@ -1,0 +1,27 @@
+[Luminance Curve]
+Enabled=true
+Contrast=-8
+LCurve=3;0;0;0.12;0.34;0.78;0.88;1;1;
+
+[Vibrance]
+Enabled=true
+Pastels=18
+Saturated=-14
+
+[ColorToning]
+Enabled=true
+Method=Splitco
+Lumamode=true
+Redlow=4
+Greenlow=0
+Bluelow=6
+Redmed=0
+Greenmed=0
+Bluemed=0
+Redhigh=6
+Greenhigh=0
+Bluehigh=4
+Strength=20
+Autosat=true
+SatProtectionThreshold=30
+SaturatedOpacity=80
