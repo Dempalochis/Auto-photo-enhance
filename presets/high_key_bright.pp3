@@ -1,0 +1,11 @@
+[Luminance Curve]
+Enabled=true
+Contrast=-10
+LCurve=3;0;0;0.1;0.3;0.7;0.85;1;1;
+
+[Vibrance]
+Enabled=true
+Pastels=6
+Saturated=-6
+ProtectSkins=true
+AvoidColorShift=true
