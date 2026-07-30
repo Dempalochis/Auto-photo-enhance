@@ -1,7 +1,8 @@
 <#
   Hardened, idempotent wrapper around rawtherapee-cli.
-  Converts *.arw files in -InputDir to JPEG using a RawTherapee pp3 profile,
-  logging one row per file and exiting non-zero if anything failed.
+  Converts *.arw files in -InputDir to JPEG using a RawTherapee pp3 profile (color correction),
+  optionally with a second pp3 "look" preset stacked on top, logging one row per file and
+  exiting non-zero if anything failed.
 
   Settings resolve in this order (highest wins): explicit -Param > config/config.json > built-in default.
 #>
@@ -12,34 +13,23 @@ param(
     [string]$RTPath,
     [string]$ProfilePath,
     [string]$Profile,
+    [string]$Preset,
     [Nullable[int]]$Quality,
     [string]$LogDir,
     [string]$ConfigPath
 )
 
 $ErrorActionPreference = "Stop"
-$RepoRoot = Split-Path -Parent $PSScriptRoot
+. (Join-Path $PSScriptRoot "lib_common.ps1")
+$RepoRoot = Get-RepoRoot
 
 function Fail($message) {
     Write-Host "ERROR: $message" -ForegroundColor Red
     exit 1
 }
 
-function Resolve-RepoPath($path) {
-    if ([System.IO.Path]::IsPathRooted($path)) { return $path }
-    return (Join-Path $RepoRoot $path)
-}
-
 if (-not $ConfigPath) { $ConfigPath = Join-Path $RepoRoot "config\config.json" }
-
-$config = [pscustomobject]@{}
-if (Test-Path -LiteralPath $ConfigPath) {
-    try {
-        $config = Get-Content -LiteralPath $ConfigPath -Raw | ConvertFrom-Json
-    } catch {
-        Fail "Failed to parse config file (invalid JSON): $ConfigPath`n$_"
-    }
-}
+$config = Read-EnhanceConfig $ConfigPath
 
 if ($config.quality -and ($config.quality -lt 1 -or $config.quality -gt 100)) {
     Fail "Invalid 'quality' in config (must be 1-100): $($config.quality)"
@@ -47,44 +37,27 @@ if ($config.quality -and ($config.quality -lt 1 -or $config.quality -gt 100)) {
 
 if (-not $RTPath)  { $RTPath  = if ($config.rtPath)  { $config.rtPath }  else { "C:\Program Files\RawTherapee\5.12\rawtherapee-cli.exe" } }
 if (-not $InputDir) { $InputDir = $RepoRoot }
-if (-not $OutputDir) { $OutputDir = if ($config.outputDir) { Resolve-RepoPath $config.outputDir } else { Join-Path $RepoRoot "edited_jpg" } }
-if (-not $LogDir)    { $LogDir    = if ($config.logDir)    { Resolve-RepoPath $config.logDir }    else { Join-Path $RepoRoot "logs" } }
+if (-not $OutputDir) { $OutputDir = if ($config.outputDir) { Resolve-RepoPath $RepoRoot $config.outputDir } else { Join-Path $RepoRoot "edited_jpg" } }
+if (-not $LogDir)    { $LogDir    = if ($config.logDir)    { Resolve-RepoPath $RepoRoot $config.logDir }    else { Join-Path $RepoRoot "logs" } }
 if (-not $Quality)   { $Quality   = if ($config.quality)   { $config.quality }                    else { 95 } }
 $quarantineAfterFailures = if ($config.quarantineAfterFailures) { $config.quarantineAfterFailures } else { 2 }
-
-$explicitProfileOverride = $PSBoundParameters.ContainsKey('ProfilePath') -or $PSBoundParameters.ContainsKey('Profile')
-
-if (-not $ProfilePath) {
-    if (-not $Profile) {
-        $Profile = if ($config.defaultProfile) { $config.defaultProfile } else { "default" }
-    }
-    $ProfilePath = Join-Path $RepoRoot "profiles\$Profile.pp3"
-}
 
 if (-not (Test-Path -LiteralPath $RTPath)) {
     Fail "RawTherapee CLI not found: $RTPath"
 }
-if (-not (Test-Path -LiteralPath $ProfilePath)) {
-    Fail "Missing profile: $ProfilePath"
-}
 
-# Auto-profile: pick a profile per file based on ISO (read via exiftool), instead of one
-# static profile for every shot. Falls back to the static profile above when disabled,
-# overridden explicitly, or exiftool isn't available.
-$autoProfileEnabled = (-not $explicitProfileOverride) -and $config.autoProfile -and $config.autoProfile.enabled
-$exiftoolPath = $config.exiftoolPath
-$exiftoolAvailable = $autoProfileEnabled -and $exiftoolPath -and (Test-Path -LiteralPath $exiftoolPath)
+$explicitProfileOverride = $PSBoundParameters.ContainsKey('ProfilePath') -or $PSBoundParameters.ContainsKey('Profile')
+$baseCtx = Initialize-BaseProfileContext -RepoRoot $RepoRoot -config $config -ProfilePath $ProfilePath -Profile $Profile -ExplicitProfileOverride $explicitProfileOverride
 
-if ($autoProfileEnabled -and -not $exiftoolAvailable) {
-    Write-Host "NOTE: autoProfile is enabled in config but exiftool was not found at '$exiftoolPath' - using the static profile for all files."
-}
-
-if ($exiftoolAvailable) {
-    $isoThreshold = if ($config.autoProfile.isoThreshold) { $config.autoProfile.isoThreshold } else { 800 }
-    $lowIsoProfilePath = Join-Path $RepoRoot "profiles\$($config.autoProfile.lowIsoProfile).pp3"
-    $highIsoProfilePath = Join-Path $RepoRoot "profiles\$($config.autoProfile.highIsoProfile).pp3"
-    if (-not (Test-Path -LiteralPath $lowIsoProfilePath)) { Fail "Missing autoProfile.lowIsoProfile: $lowIsoProfilePath" }
-    if (-not (Test-Path -LiteralPath $highIsoProfilePath)) { Fail "Missing autoProfile.highIsoProfile: $highIsoProfilePath" }
+# Preset ("look"): an optional second pp3 stacked on top of the base color-correction profile.
+# Not set (default) => behaves exactly as before presets existed.
+if (-not $PSBoundParameters.ContainsKey('Preset') -and $config.preset) { $Preset = $config.preset }
+$presetPath = $null
+if ($Preset) {
+    $presetPath = Join-Path $RepoRoot "presets\$Preset.pp3"
+    if (-not (Test-Path -LiteralPath $presetPath)) {
+        Fail "Missing preset: $presetPath"
+    }
 }
 
 New-Item -ItemType Directory -Force -Path $OutputDir | Out-Null
@@ -124,26 +97,16 @@ foreach ($arw in $arwFiles) {
         continue
     }
 
-    $profileForThisFile = $ProfilePath
-    $isoValue = ""
+    $base = Get-BaseProfileForFile -ctx $baseCtx -file $arw
+    $profileForThisFile = $base.ProfilePath
+    $isoValue = $base.ISO
 
-    if ($exiftoolAvailable) {
-        $isoRaw = (& $exiftoolPath "-ISO" "-s" "-s" "-s" $arw.FullName | Out-String).Trim()
-        $isoInt = 0
-        if ([int]::TryParse($isoRaw, [ref]$isoInt)) {
-            $isoValue = $isoInt
-            $profileForThisFile = if ($isoInt -ge $isoThreshold) { $highIsoProfilePath } else { $lowIsoProfilePath }
-        }
-    }
+    $presetLabel = if ($presetPath) { $Preset } else { "none" }
+    Write-Host "Enhancing $($arw.Name) (ISO=$isoValue, profile=$([System.IO.Path]::GetFileNameWithoutExtension($profileForThisFile)), preset=$presetLabel)"
 
-    Write-Host "Enhancing $($arw.Name) (ISO=$isoValue, profile=$([System.IO.Path]::GetFileNameWithoutExtension($profileForThisFile)))"
-    $rtArgs = @(
-        "-p", $profileForThisFile,
-        "-o", $outFile,
-        "-j$Quality",
-        "-Y",
-        "-c", $arw.FullName
-    )
+    $rtArgs = @("-p", $profileForThisFile)
+    if ($presetPath) { $rtArgs += @("-p", $presetPath) }
+    $rtArgs += @("-o", $outFile, "-j$Quality", "-Y", "-c", $arw.FullName)
 
     $sw = [System.Diagnostics.Stopwatch]::StartNew()
     $stdout = & $RTPath @rtArgs | Out-String
@@ -199,6 +162,7 @@ foreach ($arw in $arwFiles) {
         DurationSec = [math]::Round($sw.Elapsed.TotalSeconds, 2)
         ISO         = $isoValue
         Profile     = [System.IO.Path]::GetFileNameWithoutExtension($profileForThisFile)
+        Preset      = $presetLabel
         OutputPath  = $outFile
         Note        = $note
     })
@@ -213,7 +177,8 @@ $rows | Export-Csv -LiteralPath $logFile -NoTypeInformation
 
 Write-Host ""
 Write-Host "====================================="
-Write-Host "Profile: $ProfilePath"
+Write-Host "Base profile: $($baseCtx.StaticProfilePath)"
+Write-Host "Preset: $(if ($presetPath) { $presetPath } else { 'none' })"
 Write-Host "Processed: $processed  Skipped: $skipped  Failed: $failed  Quarantined: $quarantined"
 Write-Host "Total time: $([math]::Round($totalSw.Elapsed.TotalSeconds, 1))s"
 Write-Host "Log: $logFile"

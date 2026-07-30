@@ -9,12 +9,16 @@ Double-click [`auto_enhance_arw_to_jpg.bat`](auto_enhance_arw_to_jpg.bat). It co
 ## Layout
 
 ```
-config/config.json     settings: RawTherapee path, output/log dirs, quality, profiles, auto-profile rules
-profiles/*.pp3          RawTherapee processing profiles (named, selectable)
+config/config.json     settings: RawTherapee path, output/log dirs, quality, profiles, auto-profile rules, preset
+profiles/*.pp3          RawTherapee color-correction profiles (named, selectable, ISO-branched)
+presets/*.pp3           RawTherapee "look" presets, stacked on top of a profile (see Presets below)
+scripts/lib_common.ps1  shared config-loading / base-profile-resolution logic
 scripts/auto_enhance.ps1   main pipeline: converts *.arw -> *.jpg, logs, handles failures
 scripts/watch_folder.ps1   optional watch-folder wrapper around auto_enhance.ps1
-logs/*.csv              one row per file per run: status, exit code, duration, ISO, profile used
+scripts/preview_presets.ps1   renders one example photo through every preset for comparison
+logs/*.csv              one run per file per run: status, exit code, duration, ISO, profile, preset used
 edited_jpg/             output JPEGs
+preview/                example photo rendered through every preset + an index.html gallery
 ```
 
 ## How it works
@@ -36,10 +40,60 @@ edited_jpg/             output JPEGs
   "defaultProfile": "default",
   "exiftoolPath": "...\\ExifTool.exe",
   "autoProfile": { "enabled": true, "isoThreshold": 800, "lowIsoProfile": "default", "highIsoProfile": "lowlight" },
-  "quarantineAfterFailures": 2
+  "quarantineAfterFailures": 2,
+  "preset": null
 }
 ```
-`outputDir`/`logDir` are relative to the repo root unless given as absolute paths. Any setting can be overridden per-invocation with the matching `-Param` (e.g. `-Quality 90`, `-InputDir ...`).
+`outputDir`/`logDir` are relative to the repo root unless given as absolute paths. Any setting can be overridden per-invocation with the matching `-Param` (e.g. `-Quality 90`, `-InputDir ...`). `preset` is the name of a `presets/*.pp3` to stack on every conversion (e.g. `"teal_orange"`); leave it `null` for plain color-corrected output, or override per-run with `-Preset <name>`.
+
+## Presets ("looks")
+
+A preset is a small, *partial* pp3 that only touches stylistic settings (tone curve/contrast, saturation, split-toning, vignette, B&W, a white-balance bias) — never exposure/WB/denoise/sharpening, which stay owned by the color-correction profile. RawTherapee natively supports stacking multiple `-p` profiles in one call, each layering on top of the last:
+
+```
+rawtherapee-cli -p profiles/default.pp3 -p presets/teal_orange.pp3 -o out.jpg -j95 -Y -c photo.ARW
+```
+
+`auto_enhance.ps1` does exactly this whenever a preset is selected (via config or `-Preset <name>`), applied *after* the same ISO-based profile selection as before. No preset selected = pipeline behaves exactly as it did before presets existed.
+
+Split-tone/two-tone looks use RawTherapee's real `[ColorToning]` tool (`Method=Splitco`, verified against RawTherapee's own source code) — independent RGB pushes for shadows/mids/highlights, not a hand-rolled color-curve hack.
+
+### The 20 presets (`presets/*.pp3`)
+
+| Preset | Category | Look |
+|---|---|---|
+| `nature_earth` | Nature | Muted, de-saturated organic tones (2026 "organic grading" trend — less neon-green, more grounded) |
+| `golden_hour` | Nature | Warm push, protected highlights, soft vignette |
+| `forest_moody` | Nature | Deep, cool-shadowed greens, atmospheric |
+| `dramatic_sky` | Nature | Punchy clarity/contrast for big-sky landscapes |
+| `autumn_glow` | Nature | Boosted warm oranges/reds for foliage |
+| `teal_orange` | Urban | Classic cinematic blockbuster split-tone, restrained |
+| `urban_fade` | Urban | Washed-out, flatter contrast "urban nostalgia" |
+| `street_mono` | Urban | High-contrast gritty documentary B&W |
+| `concrete_cool` | Urban | Cool blue-grey minimalist architecture |
+| `blue_hour` | Urban | Deep blue ambience against warm light sources |
+| `neon_nights` | Night | Cyberpunk magenta/cyan push — shines on scenes with real colored lights |
+| `astro_sky` | Night | High clarity/contrast + cool cast for starry skies |
+| `moonlit_blue` | Night | Cool, desaturated, quiet nightscape |
+| `citylight_glow` | Night | Warm, soft-contrast bokeh city-lights glow |
+| `natural_skin` | Portrait | True-to-life, minimal, skin-protected (2026 trend: less filtering, not more) |
+| `editorial_mono` | Portrait | Contrast B&W with a channel mix tuned for flattering skin luminance |
+| `soft_glow` | Portrait | Airy, soft-contrast, creamy lifted highlights |
+| `moody_warm` | Portrait | Restrained warm-shadow/cool-highlight depth (not crushed blacks) |
+| `pastel_dream` | Mood | High-key, soft pastel palette |
+| `punch_pop` | Mood | Bold modern high-clarity, high-contrast, saturated |
+
+These were verified for correct RawTherapee syntax, checked for measurable difference from the base and from each other, and visually inspected — but the reference photo used during development was a daytime indoor car-show shot, so effects tuned for foliage/skin/neon-lit night scenes (`nature_earth`, `moody_warm`, `neon_nights`, etc.) will read more strongly on photos with that actual content. Run `preview_presets.ps1` against a real photo from the relevant scenario before trusting a look for a shoot.
+
+Included presets (`presets/*.pp3`): `warm_film`, `cool_moody`, `bw_classic`, `punchy_pop`, `soft_pastel`.
+
+**Choosing a preset for a shoot** — render one example photo through every preset to compare, before running the whole batch:
+```
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\preview_presets.ps1 -SourceFile path\to\example.ARW
+```
+This writes `preview/00_base_only.jpg` (no preset, for reference) plus one JPEG per preset and a `preview/index.html` gallery — open it in a browser to compare side by side. Then set `"preset": "<name>"` in the config (or pass `-Preset <name>` to `auto_enhance.ps1`) for the actual batch run.
+
+**Adding a new preset**: same idea as adding a profile — dial in a look in the RawTherapee GUI, but save only the tool sections you actually changed (right-click a tool → "reset to neutral" for anything you didn't touch before saving) so it stays a thin, stackable layer rather than clobbering the base profile's exposure/WB.
 
 ## Adding a new profile
 
@@ -76,5 +130,7 @@ Each capability below was verified against real sample `.ARW` files during devel
 - A rejected CLI flag is caught (both via exit code and the `Usage:` banner check) instead of silently "succeeding".
 - Two different profiles applied to the same photo produce different output (checksums differ).
 - ISO-based auto-profile branching picks the correct profile per file; an explicit `-Profile` override bypasses it.
+- No preset selected produces byte-identical pipeline behavior to before presets existed (verified after the shared-logic refactor).
+- Each preset, stacked on the base profile, produces a distinct output (checksums differ from base-only and from each other); results were visually inspected, not just checksum-diffed.
 - Watch-folder: a batch of files dropped at once is processed exactly once, never duplicated across poll cycles; a file still being written is correctly left alone until its size stabilizes.
 - A corrupt/unreadable file fails without aborting the rest of the batch, and is quarantined to `failed/` after repeated failures instead of being retried forever.

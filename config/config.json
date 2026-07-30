@@ -10,5 +10,7 @@
     "isoThreshold": 800,
     "lowIsoProfile": "default",
     "highIsoProfile": "lowlight"
-  }
+  },
+  "quarantineAfterFailures": 2,
+  "preset": null
 }
