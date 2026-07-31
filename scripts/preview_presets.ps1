@@ -2,6 +2,18 @@
   Renders one example raw photo through the base color-correction profile alone, then through
   each preset in presets/ stacked on top, so you can compare "looks" side by side before
   picking one for a whole shoot. Writes JPEGs + an index.html gallery to -OutputDir.
+
+  Prints "Rendering <label>..." before each render so a caller (e.g. the web UI backend) can
+  parse stdout to show incremental progress across the ~30 renders instead of one long wait.
+
+  Uses RawTherapee's -q (quick-start) flag, which skips loading cached files at startup for a
+  small (~3-5%), zero-quality-cost time saving. -f (fast-export) was tried and measured here:
+  it bypasses sharpening/denoise/defringe/wavelet and forces the fastest demosaic algorithm,
+  but on this machine/file it gave no measurable speedup (its resize step also didn't apply,
+  matching a known RawTherapee CLI bug - output stayed full resolution either way) while still
+  degrading quality, so it was NOT used. If a future RT version fixes that, it's worth
+  re-measuring: -f only belongs here (throwaway comparison renders), never in the production
+  run in auto_enhance.ps1.
 #>
 [CmdletBinding()]
 param(
@@ -26,7 +38,8 @@ function Fail($message) {
 if (-not $ConfigPath) { $ConfigPath = Join-Path $RepoRoot "config\config.json" }
 $config = Read-EnhanceConfig $ConfigPath
 
-if (-not $RTPath) { $RTPath = if ($config.rtPath) { $config.rtPath } else { "C:\Program Files\RawTherapee\5.12\rawtherapee-cli.exe" } }
+if (-not $RTPath) { $RTPath = $config.rtPath }
+$RTPath = Resolve-RTPath $RTPath
 if (-not $Quality) { $Quality = if ($config.quality) { $config.quality } else { 95 } }
 if (-not $OutputDir) { $OutputDir = Join-Path $RepoRoot "preview" }
 
@@ -53,13 +66,15 @@ function Invoke-RT($label, $presetPath) {
     $outFile = Join-Path $OutputDir "$label.jpg"
     $rtArgs = @("-p", $base.ProfilePath)
     if ($presetPath) { $rtArgs += @("-p", $presetPath) }
-    $rtArgs += @("-o", $outFile, "-j$Quality", "-Y", "-c", $sourceItem.FullName)
+    $rtArgs += @("-o", $outFile, "-j$Quality", "-Y", "-q", "-c", $sourceItem.FullName)
     Write-Host "Rendering $label..."
     $stdout = & $RTPath @rtArgs | Out-String
     $exitCode = $LASTEXITCODE
     $ok = ($exitCode -eq 0) -and (Test-Path -LiteralPath $outFile) -and ($stdout -notmatch "Usage:")
-    if (-not $ok) {
-        Write-Host "  FAILED rendering $label (exit $exitCode)" -ForegroundColor Red
+    if ($ok) {
+        Write-Host "Rendered $label"
+    } else {
+        Write-Host "FAILED rendering $label (exit $exitCode)" -ForegroundColor Red
     }
     return [pscustomobject]@{ Label = $label; OutFile = "$label.jpg"; Ok = $ok }
 }

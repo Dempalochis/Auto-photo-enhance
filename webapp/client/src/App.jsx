@@ -1,0 +1,133 @@
+import { useEffect, useState } from 'react';
+import * as Tooltip from '@radix-ui/react-tooltip';
+import { getPhotos, getPresets, startPreview, startRun } from './api';
+import { useJob } from './useJob';
+import PhotoPicker from './components/PhotoPicker';
+import PresetPreview from './components/PresetPreview';
+import RunPanel from './components/RunPanel';
+
+const PROJECT_NAME_KEY = 'ape.lastProjectName';
+const PRESET_KEY = 'ape.lastPreset';
+
+export default function App() {
+  const [photos, setPhotos] = useState([]);
+  const [presetNames, setPresetNames] = useState([]);
+  const [selected, setSelected] = useState(new Set());
+  const [previewPhoto, setPreviewPhoto] = useState(null);
+  const [previewJobId, setPreviewJobId] = useState(null);
+  const [selectedPreset, setSelectedPreset] = useState(() => localStorage.getItem(PRESET_KEY) || 'none');
+  const [projectName, setProjectName] = useState(() => localStorage.getItem(PROJECT_NAME_KEY) || '');
+  const [runJobId, setRunJobId] = useState(null);
+  const [loadError, setLoadError] = useState(null);
+  const [previewStarting, setPreviewStarting] = useState(false);
+  const [runStarting, setRunStarting] = useState(false);
+
+  const previewJob = useJob(previewJobId);
+  const runJob = useJob(runJobId);
+
+  useEffect(() => {
+    Promise.all([getPhotos(), getPresets()])
+      .then(([p, pr]) => {
+        setPhotos(p.photos);
+        setPresetNames(pr.presets);
+      })
+      .catch((err) => setLoadError(err.message));
+  }, []);
+
+  useEffect(() => { localStorage.setItem(PROJECT_NAME_KEY, projectName); }, [projectName]);
+  useEffect(() => { localStorage.setItem(PRESET_KEY, selectedPreset); }, [selectedPreset]);
+
+  const toggle = (name) => {
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (next.has(name)) next.delete(name); else next.add(name);
+      return next;
+    });
+  };
+
+  const selectMany = (names, select) => {
+    setSelected((prev) => {
+      const next = new Set(prev);
+      names.forEach((n) => (select ? next.add(n) : next.delete(n)));
+      return next;
+    });
+  };
+
+  const handlePreview = async (name) => {
+    if (previewStarting) return;
+    setPreviewStarting(true);
+    setPreviewPhoto(name);
+    try {
+      const { jobId } = await startPreview(name);
+      setPreviewJobId(jobId);
+    } catch (err) {
+      setLoadError(err.message);
+    } finally {
+      setPreviewStarting(false);
+    }
+  };
+
+  const handleRun = async () => {
+    if (runStarting) return;
+    setRunStarting(true);
+    try {
+      const { jobId } = await startRun(Array.from(selected), selectedPreset, projectName);
+      setRunJobId(jobId);
+    } catch (err) {
+      setLoadError(err.message);
+    } finally {
+      setRunStarting(false);
+    }
+  };
+
+  const selectedPhotos = photos.filter((p) => selected.has(p.relPath));
+
+  return (
+    <Tooltip.Provider delayDuration={200}>
+      <div className="min-h-screen">
+        <header className="border-b border-[var(--border)] px-6 py-4">
+          <h1 className="text-xl">Auto Photo Enhance</h1>
+          <p className="eyebrow mt-1">Raw color correction + preset looks · RawTherapee</p>
+        </header>
+
+        {loadError && (
+          <div className="mx-6 mt-4 panel border-[var(--danger)] text-[var(--danger)] text-sm px-4 py-2">
+            {loadError}
+          </div>
+        )}
+
+        <main className="max-w-[1180px] mx-auto p-6 grid grid-cols-1 lg:grid-cols-[2fr_1fr] gap-8">
+          <div className="space-y-10">
+            <PhotoPicker
+              photos={photos}
+              selected={selected}
+              onToggle={toggle}
+              onSelectMany={selectMany}
+              onPreview={handlePreview}
+              previewPhoto={previewPhoto}
+              previewStarting={previewStarting}
+            />
+            <PresetPreview
+              previewPhoto={previewPhoto}
+              job={previewJob}
+              selectedPreset={selectedPreset}
+              onSelectPreset={setSelectedPreset}
+            />
+          </div>
+
+          <div className="lg:sticky lg:top-6 self-start panel p-5">
+            <RunPanel
+              projectName={projectName}
+              onProjectNameChange={setProjectName}
+              selectedPhotos={selectedPhotos}
+              selectedPreset={selectedPreset}
+              job={runJob}
+              onRun={handleRun}
+              canRun={selected.size > 0}
+            />
+          </div>
+        </main>
+      </div>
+    </Tooltip.Provider>
+  );
+}

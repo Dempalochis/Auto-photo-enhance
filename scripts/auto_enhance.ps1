@@ -5,6 +5,11 @@
   exiting non-zero if anything failed.
 
   Settings resolve in this order (highest wins): explicit -Param > config/config.json > built-in default.
+
+  To process an explicit subset of files instead of a whole -InputDir, pass -FilesJson with a
+  JSON array of paths, e.g.: -FilesJson '["C:\a.ARW","C:\b.ARW"]'
+  (a single JSON string sidesteps PowerShell's array/positional argv parsing quirks entirely -
+  this is how the web UI backend calls it.)
 #>
 [CmdletBinding()]
 param(
@@ -16,7 +21,10 @@ param(
     [string]$Preset,
     [Nullable[int]]$Quality,
     [string]$LogDir,
-    [string]$ConfigPath
+    [string]$ConfigPath,
+    [string]$FilesJson,
+    [string]$PhotosRoot,
+    [Nullable[bool]]$ScanSubfolders
 )
 
 $ErrorActionPreference = "Stop"
@@ -35,12 +43,14 @@ if ($config.quality -and ($config.quality -lt 1 -or $config.quality -gt 100)) {
     Fail "Invalid 'quality' in config (must be 1-100): $($config.quality)"
 }
 
-if (-not $RTPath)  { $RTPath  = if ($config.rtPath)  { $config.rtPath }  else { "C:\Program Files\RawTherapee\5.12\rawtherapee-cli.exe" } }
+if (-not $RTPath) { $RTPath = $config.rtPath }
+$RTPath = Resolve-RTPath $RTPath
 if (-not $InputDir) { $InputDir = $RepoRoot }
 if (-not $OutputDir) { $OutputDir = if ($config.outputDir) { Resolve-RepoPath $RepoRoot $config.outputDir } else { Join-Path $RepoRoot "edited_jpg" } }
 if (-not $LogDir)    { $LogDir    = if ($config.logDir)    { Resolve-RepoPath $RepoRoot $config.logDir }    else { Join-Path $RepoRoot "logs" } }
 if (-not $Quality)   { $Quality   = if ($config.quality)   { $config.quality }                    else { 95 } }
 $quarantineAfterFailures = if ($config.quarantineAfterFailures) { $config.quarantineAfterFailures } else { 2 }
+if ($null -eq $ScanSubfolders) { $ScanSubfolders = if ($null -ne $config.scanSubfolders) { [bool]$config.scanSubfolders } else { $true } }
 
 if (-not (Test-Path -LiteralPath $RTPath)) {
     Fail "RawTherapee CLI not found: $RTPath"
@@ -61,26 +71,53 @@ if ($Preset) {
 }
 
 New-Item -ItemType Directory -Force -Path $OutputDir | Out-Null
+
+$existingCount = @(Get-ChildItem -LiteralPath $OutputDir -Force -ErrorAction SilentlyContinue).Count
+if ($existingCount -gt 0) {
+    Write-Host "WARNING: Output folder already contains $existingCount item(s): $OutputDir"
+}
+
 New-Item -ItemType Directory -Force -Path $LogDir | Out-Null
 
 $timestamp = Get-Date -Format "yyyyMMdd_HHmmss"
 $logFile = Join-Path $LogDir "run_$timestamp.csv"
 $rows = New-Object System.Collections.Generic.List[object]
 
-$arwFiles = Get-ChildItem -LiteralPath $InputDir -Filter "*.arw" -File
+if ($FilesJson) {
+    try {
+        $fileList = @(ConvertFrom-Json -InputObject $FilesJson)
+    } catch {
+        Fail "Failed to parse -FilesJson (invalid JSON): $_"
+    }
+    $arwFiles = @()
+    foreach ($f in $fileList) {
+        if (-not (Test-Path -LiteralPath $f)) { Fail "File not found: $f" }
+        $arwFiles += Get-Item -LiteralPath $f
+    }
+} else {
+    $arwFiles = @(Get-ChildItem -LiteralPath $InputDir -Filter "*.arw" -File -Recurse:$ScanSubfolders)
+}
 if ($arwFiles.Count -eq 0) {
     Write-Host "No .arw files found in $InputDir"
 }
+
+# Root used to compute each file's relative subfolder, so a recursive scan's output mirrors
+# the input structure instead of flattening everything into one folder. -PhotosRoot lets a
+# caller (the web UI, which passes an explicit -FilesJson list) supply this even though
+# $InputDir isn't the relevant root in that mode.
+$mirrorRoot = if ($PhotosRoot) { $PhotosRoot } else { $InputDir }
 
 $processed = 0
 $skipped = 0
 $failed = 0
 $quarantined = 0
-$failedDir = Join-Path $InputDir "failed"
 $totalSw = [System.Diagnostics.Stopwatch]::StartNew()
 
 foreach ($arw in $arwFiles) {
-    $outFile = Join-Path $OutputDir "$($arw.BaseName).jpg"
+    $relSubfolder = Get-RelativeSubfolder $mirrorRoot $arw.DirectoryName
+    $outSubdir = if ($relSubfolder) { Join-Path $OutputDir $relSubfolder } else { $OutputDir }
+    if ($relSubfolder) { New-Item -ItemType Directory -Force -Path $outSubdir | Out-Null }
+    $outFile = Join-Path $outSubdir "$($arw.BaseName).jpg"
 
     if (Test-Path -LiteralPath $outFile) {
         Write-Host "Skipping $($arw.Name) (output already exists)"
@@ -106,7 +143,7 @@ foreach ($arw in $arwFiles) {
 
     $rtArgs = @("-p", $profileForThisFile)
     if ($presetPath) { $rtArgs += @("-p", $presetPath) }
-    $rtArgs += @("-o", $outFile, "-j$Quality", "-Y", "-c", $arw.FullName)
+    $rtArgs += @("-o", $outFile, "-j$Quality", "-Y", "-q", "-c", $arw.FullName)
 
     $sw = [System.Diagnostics.Stopwatch]::StartNew()
     $stdout = & $RTPath @rtArgs | Out-String
@@ -142,6 +179,7 @@ foreach ($arw in $arwFiles) {
         }
 
         if ($attempts -ge $quarantineAfterFailures) {
+            $failedDir = Join-Path $arw.DirectoryName "failed"
             New-Item -ItemType Directory -Force -Path $failedDir | Out-Null
             $quarantinePath = Join-Path $failedDir $arw.Name
             Move-Item -LiteralPath $arw.FullName -Destination $quarantinePath -Force

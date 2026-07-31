@@ -1,0 +1,13 @@
+{
+  "name": "auto-photo-enhance-server",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Local backend for the Auto-photo-enhance web UI: lists photos/presets, runs preset previews and batch conversions by shelling out to the existing PowerShell pipeline.",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "express": "^4.19.2"
+  }
+}

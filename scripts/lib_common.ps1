@@ -26,6 +26,62 @@ function Resolve-RepoPath([string]$RepoRoot, [string]$path) {
 }
 
 <#
+  Resolves the rawtherapee-cli.exe to use: the configured path if it still exists, otherwise
+  scans "C:\Program Files\RawTherapee\<version>\" for the newest installed version (proper
+  numeric version comparison, not a lexicographic string sort - "5.9" must not outrank "5.12").
+  Falls back to returning whatever was configured (possibly empty) so the caller's own
+  "RawTherapee CLI not found" check still fires with a sensible path in the error message.
+#>
+function Resolve-RTPath([string]$ConfiguredPath) {
+    if ($ConfiguredPath -and (Test-Path -LiteralPath $ConfiguredPath)) {
+        return $ConfiguredPath
+    }
+    if ($ConfiguredPath) {
+        Write-Host "NOTE: configured rtPath not found ($ConfiguredPath) - looking for another RawTherapee install..."
+    }
+
+    $installRoot = "C:\Program Files\RawTherapee"
+    if (Test-Path -LiteralPath $installRoot) {
+        $candidates = @(Get-ChildItem -LiteralPath $installRoot -Directory | ForEach-Object {
+            $parsed = $null
+            if ([System.Version]::TryParse($_.Name, [ref]$parsed)) {
+                $exePath = Join-Path $_.FullName "rawtherapee-cli.exe"
+                if (Test-Path -LiteralPath $exePath) {
+                    [pscustomobject]@{ Version = $parsed; Path = $exePath }
+                }
+            }
+        } | Sort-Object Version -Descending)
+
+        if ($candidates.Count -gt 0) {
+            Write-Host "Using RawTherapee $($candidates[0].Version) at $($candidates[0].Path)"
+            return $candidates[0].Path
+        }
+    }
+
+    return $ConfiguredPath
+}
+
+<#
+  Returns the subfolder of $FileDir relative to $Root (e.g. "Ceremony"), or "" if $FileDir IS
+  $Root or $Root is not set. Used to mirror an input subfolder structure into the output
+  folder when scanning recursively, instead of flattening everything into one directory.
+#>
+function Get-RelativeSubfolder([string]$Root, [string]$FileDir) {
+    if (-not $Root) { return "" }
+    try {
+        $rootFull = (Resolve-Path -LiteralPath $Root).Path.TrimEnd('\')
+        $dirFull = (Resolve-Path -LiteralPath $FileDir).Path.TrimEnd('\')
+    } catch {
+        return ""
+    }
+    if ($dirFull -ieq $rootFull) { return "" }
+    if ($dirFull.StartsWith("$rootFull\", [System.StringComparison]::OrdinalIgnoreCase)) {
+        return $dirFull.Substring($rootFull.Length + 1)
+    }
+    return ""
+}
+
+<#
   Sets up everything needed to pick a base (color-correction) profile per file:
   static fallback profile, and - if exiftool is configured and available - ISO-based
   branching between config.autoProfile.lowIsoProfile / highIsoProfile.
