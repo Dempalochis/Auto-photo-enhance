@@ -7,14 +7,44 @@ const { enqueue, getJob } = require('./jobQueue');
 const { runPowerShellScript } = require('./runner');
 const { extractThumbnail } = require('./thumbnails');
 const { getCaptureDates } = require('./captureDates');
+const { makeStateStore } = require('./state');
+const { listDrives } = require('./drives');
 
 const cfg = loadConfig();
 const app = express();
 app.use(express.json());
 
+// Express 4 doesn't catch rejected promises from `async (req, res) => {...}` handlers - an
+// error thrown deep in one (e.g. the ENAMETOOLONG crash a 4500+ file library triggered) becomes
+// an unhandled rejection that takes the *entire* server down, not just that one request.
+function asyncHandler(fn) {
+  return (req, res) => {
+    Promise.resolve(fn(req, res)).catch((err) => {
+      console.error(`Error handling ${req.method} ${req.path}:`, err);
+      if (!res.headersSent) res.status(500).json({ error: err.message || 'internal server error' });
+    });
+  };
+}
+
+// Last-resort net: log and keep serving rather than let one bad request kill every other
+// in-flight request and job. This is a local single-user tool, not a multi-tenant service,
+// so "stay up" beats "crash safely" here.
+process.on('unhandledRejection', (err) => {
+  console.error('Unhandled promise rejection (server staying up):', err);
+});
+process.on('uncaughtException', (err) => {
+  console.error('Uncaught exception (server staying up):', err);
+});
+
 fs.mkdirSync(cfg.thumbCacheDir, { recursive: true });
 fs.mkdirSync(cfg.previewCacheDir, { recursive: true });
 fs.mkdirSync(cfg.projectsDir, { recursive: true });
+
+// The active source folder can be changed from the UI at runtime (see /api/source-folder
+// below); it starts from config.json's photosDir, or wherever the user last pointed it.
+const stateStore = makeStateStore(path.join(cfg.repoRoot, '.webapp_cache'));
+const savedPhotosDir = stateStore.read().photosDir;
+let activePhotosDir = (savedPhotosDir && fs.existsSync(savedPhotosDir)) ? savedPhotosDir : cfg.photosDir;
 
 app.use('/webapp-cache/thumbnails', express.static(cfg.thumbCacheDir));
 app.use('/webapp-cache/previews', express.static(cfg.previewCacheDir));
@@ -35,8 +65,8 @@ function isSafeRelPath(relPath) {
 // Resolves a relPath to an absolute path, re-checking the result still lands inside
 // photosDir (defense in depth beyond isSafeRelPath's textual check).
 function resolvePhotoPath(relPath) {
-  const rootResolved = path.resolve(cfg.photosDir);
-  const resolved = path.resolve(cfg.photosDir, relPath);
+  const rootResolved = path.resolve(activePhotosDir);
+  const resolved = path.resolve(activePhotosDir, relPath);
   if (resolved !== rootResolved && !resolved.startsWith(rootResolved + path.sep)) return null;
   return resolved;
 }
@@ -66,25 +96,25 @@ function walkArwFiles(dir, baseDir) {
 
 async function listPhotos() {
   const found = cfg.scanSubfolders
-    ? walkArwFiles(cfg.photosDir, cfg.photosDir)
-    : fs.readdirSync(cfg.photosDir, { withFileTypes: true })
+    ? walkArwFiles(activePhotosDir, activePhotosDir)
+    : fs.readdirSync(activePhotosDir, { withFileTypes: true })
       .filter((d) => d.isFile() && /\.arw$/i.test(d.name))
       .map((d) => ({ relPath: d.name, name: d.name, dir: '' }));
 
   const entries = found.map((f) => {
-    const stat = fs.statSync(path.join(cfg.photosDir, f.relPath));
+    const stat = fs.statSync(path.join(activePhotosDir, f.relPath));
     return { ...f, size: stat.size, mtime: stat.mtimeMs };
   });
 
   let dateMap = {};
   if (cfg.exiftoolPath && fs.existsSync(cfg.exiftoolPath) && entries.length > 0) {
-    dateMap = await getCaptureDates(cfg.exiftoolPath, entries.map((e) => path.join(cfg.photosDir, e.relPath)));
+    dateMap = await getCaptureDates(cfg.exiftoolPath, entries.map((e) => path.join(activePhotosDir, e.relPath)));
   }
 
   return entries
     .map((e) => ({
       ...e,
-      dateTaken: dateMap[path.resolve(cfg.photosDir, e.relPath)] || new Date(e.mtime).toISOString().slice(0, 19),
+      dateTaken: dateMap[path.resolve(activePhotosDir, e.relPath)] || new Date(e.mtime).toISOString().slice(0, 19),
     }))
     .sort((a, b) => a.relPath.localeCompare(b.relPath));
 }
@@ -97,13 +127,71 @@ function listPresetNames() {
     .sort();
 }
 
-// ---- photos ----
+// ---- source folder: where photos are read from, changeable at runtime from the UI ----
+// (a browser can't hand JS a real absolute filesystem path from any native picker, so the
+// UI offers a path text field plus this lightweight server-side folder browser instead.)
 
-app.get('/api/photos', async (req, res) => {
-  res.json({ photosDir: cfg.photosDir, scanSubfolders: cfg.scanSubfolders, photos: await listPhotos() });
+app.get('/api/source-folder', (req, res) => {
+  res.json({ path: activePhotosDir, scanSubfolders: cfg.scanSubfolders });
 });
 
-app.get('/api/photos/thumbnail', async (req, res) => {
+app.post('/api/source-folder', asyncHandler(async (req, res) => {
+  const requestedPath = String(req.body?.path || '').trim();
+  if (!requestedPath) return res.status(400).json({ error: 'path is required' });
+
+  let stat;
+  try {
+    stat = fs.statSync(requestedPath);
+  } catch {
+    return res.status(400).json({ error: 'folder not found' });
+  }
+  if (!stat.isDirectory()) return res.status(400).json({ error: 'not a folder' });
+
+  activePhotosDir = path.resolve(requestedPath);
+  stateStore.write({ photosDir: activePhotosDir });
+
+  const photos = await listPhotos();
+  res.json({ path: activePhotosDir, photoCount: photos.length });
+}));
+
+app.get('/api/browse-folders', asyncHandler(async (req, res) => {
+  const requestedPath = String(req.query.path || '').trim();
+
+  if (!requestedPath) {
+    // Starting point: real drive names/types (e.g. "LaCie (F:)"), same as Windows Explorer,
+    // so an external/USB drive is identifiable at a glance instead of a bare letter.
+    const drives = await listDrives();
+    return res.json({ path: '', parent: null, folders: drives });
+  }
+
+  let entries;
+  try {
+    entries = fs.readdirSync(requestedPath, { withFileTypes: true });
+  } catch (err) {
+    return res.status(400).json({ error: `cannot read folder: ${err.message}` });
+  }
+
+  const folders = entries
+    .filter((e) => e.isDirectory())
+    .map((e) => ({ name: e.name, path: path.join(requestedPath, e.name) }))
+    .sort((a, b) => a.name.localeCompare(b.name));
+
+  // At a drive root (e.g. "C:\"), path.dirname returns the same path - "no parent" would
+  // normally mean hide the up button, but here it should instead go back to the drive list
+  // (empty path), otherwise there's no way to reach a *different* drive once inside one.
+  const parentPath = path.dirname(requestedPath);
+  const parent = parentPath !== requestedPath ? parentPath : '';
+
+  res.json({ path: requestedPath, parent, folders });
+}));
+
+// ---- photos ----
+
+app.get('/api/photos', asyncHandler(async (req, res) => {
+  res.json({ photosDir: activePhotosDir, scanSubfolders: cfg.scanSubfolders, photos: await listPhotos() });
+}));
+
+app.get('/api/photos/thumbnail', asyncHandler(async (req, res) => {
   const relPath = req.query.path;
   if (!isSafeRelPath(relPath)) return res.status(400).json({ error: 'invalid photo path' });
   const sourceFile = resolvePhotoPath(relPath);
@@ -121,7 +209,7 @@ app.get('/api/photos/thumbnail', async (req, res) => {
   } catch (err) {
     res.status(500).json({ error: `failed to extract thumbnail: ${err.message}` });
   }
-});
+}));
 
 // ---- presets ----
 
@@ -242,7 +330,7 @@ app.post('/api/run', (req, res) => {
       '-OutputDir', outputDir,
       '-LogDir', logDir,
       '-ConfigPath', cfg.configPath,
-      '-PhotosRoot', cfg.photosDir,
+      '-PhotosRoot', activePhotosDir,
       '-FilesJson', JSON.stringify(absoluteFiles),
     ];
     if (preset && preset !== 'none') args.push('-Preset', preset);
@@ -295,6 +383,6 @@ app.get('/api/jobs/:id', (req, res) => {
 const PORT = process.env.PORT || 5175;
 app.listen(PORT, () => {
   console.log(`Auto-photo-enhance server listening on http://localhost:${PORT}`);
-  console.log(`Photos dir: ${cfg.photosDir} (recursive: ${cfg.scanSubfolders})`);
+  console.log(`Photos dir: ${activePhotosDir} (recursive: ${cfg.scanSubfolders})`);
   console.log(`Projects dir: ${cfg.projectsDir}`);
 });

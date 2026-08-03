@@ -1,7 +1,10 @@
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import * as Tooltip from '@radix-ui/react-tooltip';
-import { getPhotos, getPresets, startPreview, startRun } from './api';
+import {
+  getPhotos, getPresets, getSourceFolder, setSourceFolder, startPreview, startRun,
+} from './api';
 import { useJob } from './useJob';
+import SourceFolderPicker from './components/SourceFolderPicker';
 import PhotoPicker from './components/PhotoPicker';
 import PresetPreview from './components/PresetPreview';
 import RunPanel from './components/RunPanel';
@@ -10,6 +13,8 @@ const PROJECT_NAME_KEY = 'ape.lastProjectName';
 const PRESET_KEY = 'ape.lastPreset';
 
 export default function App() {
+  const [sourceFolder, setSourceFolderState] = useState('');
+  const [folderError, setFolderError] = useState(null);
   const [photos, setPhotos] = useState([]);
   const [presetNames, setPresetNames] = useState([]);
   const [selected, setSelected] = useState(new Set());
@@ -25,9 +30,14 @@ export default function App() {
   const previewJob = useJob(previewJobId);
   const runJob = useJob(runJobId);
 
+  const loadPhotos = useCallback(() => {
+    getPhotos().then((p) => setPhotos(p.photos)).catch((err) => setLoadError(err.message));
+  }, []);
+
   useEffect(() => {
-    Promise.all([getPhotos(), getPresets()])
-      .then(([p, pr]) => {
+    Promise.all([getSourceFolder(), getPhotos(), getPresets()])
+      .then(([sf, p, pr]) => {
+        setSourceFolderState(sf.path);
         setPhotos(p.photos);
         setPresetNames(pr.presets);
       })
@@ -36,6 +46,21 @@ export default function App() {
 
   useEffect(() => { localStorage.setItem(PROJECT_NAME_KEY, projectName); }, [projectName]);
   useEffect(() => { localStorage.setItem(PRESET_KEY, selectedPreset); }, [selectedPreset]);
+
+  const handleChangeFolder = async (path) => {
+    setFolderError(null);
+    try {
+      const result = await setSourceFolder(path);
+      setSourceFolderState(result.path);
+      // Selections/preview reference photos from the old folder - stale once the folder changes.
+      setSelected(new Set());
+      setPreviewPhoto(null);
+      setPreviewJobId(null);
+      loadPhotos();
+    } catch (err) {
+      setFolderError(err.message);
+    }
+  };
 
   const toggle = (name) => {
     setSelected((prev) => {
@@ -98,15 +123,23 @@ export default function App() {
 
         <main className="max-w-[1180px] mx-auto p-6 grid grid-cols-1 lg:grid-cols-[2fr_1fr] gap-8">
           <div className="space-y-10">
-            <PhotoPicker
-              photos={photos}
-              selected={selected}
-              onToggle={toggle}
-              onSelectMany={selectMany}
-              onPreview={handlePreview}
-              previewPhoto={previewPhoto}
-              previewStarting={previewStarting}
-            />
+            <div>
+              <SourceFolderPicker
+                currentPath={sourceFolder}
+                photoCount={photos.length}
+                onChangeFolder={handleChangeFolder}
+                error={folderError}
+              />
+              <PhotoPicker
+                photos={photos}
+                selected={selected}
+                onToggle={toggle}
+                onSelectMany={selectMany}
+                onPreview={handlePreview}
+                previewPhoto={previewPhoto}
+                previewStarting={previewStarting}
+              />
+            </div>
             <PresetPreview
               previewPhoto={previewPhoto}
               job={previewJob}

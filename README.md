@@ -139,7 +139,9 @@ Open the URL Vite prints (`http://localhost:5173`). The backend listens on `http
 
 ### Using it
 
-**1. Choose photos to process** — every `.arw` found in the configured photos folder (`photosDir` in the config, defaults to the repo root), auto-grouped by month then day using the photo's real EXIF capture date (not file-copy time), newest-first by default.
+**Source folder** — shows the folder currently being scanned for photos (defaults to `photosDir` from the config, or wherever you last pointed it — this choice persists across server restarts). Paste an absolute path and click **Use this folder**, or click **Browse…** for a lightweight folder navigator, since a browser can't hand a real filesystem path to the page from any native picker. The navigator lists every attached drive with its real name (e.g. "LaCie (F:)", same as Windows Explorer) — internal, external/USB, whatever's plugged in — with a **Drives** shortcut always available to jump back to that list from anywhere. Switching folders clears your current photo selection and any open preview (they'd point at photos that may no longer be relevant).
+
+**1. Choose photos to process** — every `.arw` found in the source folder above (recursively, by default), auto-grouped by month then day using the photo's real EXIF capture date (not file-copy time), newest-first by default.
 - Click a photo's checkbox to include it in the batch; **Select day** / **Select month** toggle the whole group at once; **Select all** / **Clear selection** work across whatever's currently visible.
 - **Search filename**, and **From/To date** (day-level only, ignores time-of-day) narrow the grid down.
 - **Compact/Comfortable** toggles thumbnail size; sort **Newest/Oldest first** flips the order. Both, plus your last project name and preset choice, are remembered in the browser between sessions.

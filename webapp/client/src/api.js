@@ -23,3 +23,11 @@ export const startRun = (files, preset, projectName) => jsonFetch('/api/run', {
 export const getJob = (id) => jsonFetch(`/api/jobs/${id}`);
 export const getOutputStatus = (projectName) => jsonFetch(`/api/output-status?projectName=${encodeURIComponent(projectName)}`);
 export const thumbnailUrl = (relPath) => `/api/photos/thumbnail?path=${encodeURIComponent(relPath)}`;
+
+export const getSourceFolder = () => jsonFetch('/api/source-folder');
+export const setSourceFolder = (path) => jsonFetch('/api/source-folder', {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify({ path }),
+});
+export const browseFolders = (path) => jsonFetch(`/api/browse-folders?path=${encodeURIComponent(path || '')}`);
