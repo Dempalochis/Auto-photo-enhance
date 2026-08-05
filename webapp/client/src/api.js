@@ -21,6 +21,14 @@ export const startRun = (files, preset, projectName) => jsonFetch('/api/run', {
 });
 
 export const getJob = (id) => jsonFetch(`/api/jobs/${id}`);
+export const listJobs = ({ type, status } = {}) => {
+  const params = new URLSearchParams();
+  if (type) params.set('type', type);
+  if (status) params.set('status', status.join(','));
+  const qs = params.toString();
+  return jsonFetch(`/api/jobs${qs ? `?${qs}` : ''}`);
+};
+export const cancelJob = (id) => jsonFetch(`/api/jobs/${id}`, { method: 'DELETE' });
 export const getOutputStatus = (projectName) => jsonFetch(`/api/output-status?projectName=${encodeURIComponent(projectName)}`);
 export const thumbnailUrl = (relPath) => `/api/photos/thumbnail?path=${encodeURIComponent(relPath)}`;
 

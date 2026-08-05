@@ -9,6 +9,8 @@ function runPowerShellScript(scriptPath, args, job, onLine) {
     const proc = spawn('powershell.exe', [
       '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', scriptPath, ...args,
     ]);
+    // Exposed so jobQueue.cancelJob() can kill an active job's underlying process.
+    job._proc = proc;
 
     let buffer = '';
     const handleChunk = (chunk) => {
@@ -24,8 +26,9 @@ function runPowerShellScript(scriptPath, args, job, onLine) {
 
     proc.stdout.on('data', handleChunk);
     proc.stderr.on('data', handleChunk);
-    proc.on('error', reject);
+    proc.on('error', (err) => { job._proc = null; reject(err); });
     proc.on('close', (exitCode) => {
+      job._proc = null;
       if (buffer.length > 0) {
         appendLog(job, buffer);
         if (onLine) onLine(buffer, job);

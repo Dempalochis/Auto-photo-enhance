@@ -8,12 +8,14 @@ import SourceFolderPicker from './components/SourceFolderPicker';
 import PhotoPicker from './components/PhotoPicker';
 import PresetPreview from './components/PresetPreview';
 import RunPanel from './components/RunPanel';
+import JobQueuePanel from './components/JobQueuePanel';
 
 const PROJECT_NAME_KEY = 'ape.lastProjectName';
 const PRESET_KEY = 'ape.lastPreset';
 
 export default function App() {
   const [sourceFolder, setSourceFolderState] = useState('');
+  const [folderHistory, setFolderHistory] = useState([]);
   const [folderError, setFolderError] = useState(null);
   const [photos, setPhotos] = useState([]);
   const [presetNames, setPresetNames] = useState([]);
@@ -22,13 +24,14 @@ export default function App() {
   const [previewJobId, setPreviewJobId] = useState(null);
   const [selectedPreset, setSelectedPreset] = useState(() => localStorage.getItem(PRESET_KEY) || 'none');
   const [projectName, setProjectName] = useState(() => localStorage.getItem(PROJECT_NAME_KEY) || '');
-  const [runJobId, setRunJobId] = useState(null);
   const [loadError, setLoadError] = useState(null);
   const [previewStarting, setPreviewStarting] = useState(false);
   const [runStarting, setRunStarting] = useState(false);
 
   const previewJob = useJob(previewJobId);
-  const runJob = useJob(runJobId);
+  // Run jobs are no longer tracked by a single client-side ID - the JobQueuePanel polls the
+  // server's job list directly, which is what lets Run stay usable for queuing another batch
+  // instead of waiting on the previous one (see JobQueuePanel.jsx).
 
   const loadPhotos = useCallback(() => {
     getPhotos().then((p) => setPhotos(p.photos)).catch((err) => setLoadError(err.message));
@@ -38,6 +41,7 @@ export default function App() {
     Promise.all([getSourceFolder(), getPhotos(), getPresets()])
       .then(([sf, p, pr]) => {
         setSourceFolderState(sf.path);
+        setFolderHistory(sf.history || []);
         setPhotos(p.photos);
         setPresetNames(pr.presets);
       })
@@ -52,6 +56,7 @@ export default function App() {
     try {
       const result = await setSourceFolder(path);
       setSourceFolderState(result.path);
+      setFolderHistory(result.history || []);
       // Selections/preview reference photos from the old folder - stale once the folder changes.
       setSelected(new Set());
       setPreviewPhoto(null);
@@ -96,10 +101,16 @@ export default function App() {
     if (runStarting) return;
     setRunStarting(true);
     try {
-      const { jobId } = await startRun(Array.from(selected), selectedPreset, projectName);
-      setRunJobId(jobId);
+      const result = await startRun(Array.from(selected), selectedPreset, projectName);
+      // Clear the selection once a batch is queued - the natural next step in this flow is
+      // picking a *different* set of photos to queue as the next job, not re-running the same
+      // selection. Preset/project-name choices are left as-is since those often stay the same
+      // across consecutive batches for one shoot.
+      setSelected(new Set());
+      return result;
     } catch (err) {
       setLoadError(err.message);
+      throw err; // let RunPanel know the queue attempt failed, so it skips the "Queued" toast
     } finally {
       setRunStarting(false);
     }
@@ -126,6 +137,7 @@ export default function App() {
             <div>
               <SourceFolderPicker
                 currentPath={sourceFolder}
+                history={folderHistory}
                 photoCount={photos.length}
                 onChangeFolder={handleChangeFolder}
                 error={folderError}
@@ -148,16 +160,19 @@ export default function App() {
             />
           </div>
 
-          <div className="lg:sticky lg:top-6 self-start panel p-5">
-            <RunPanel
-              projectName={projectName}
-              onProjectNameChange={setProjectName}
-              selectedPhotos={selectedPhotos}
-              selectedPreset={selectedPreset}
-              job={runJob}
-              onRun={handleRun}
-              canRun={selected.size > 0}
-            />
+          <div className="lg:sticky lg:top-6 self-start space-y-4">
+            <div className="panel p-5">
+              <RunPanel
+                projectName={projectName}
+                onProjectNameChange={setProjectName}
+                selectedPhotos={selectedPhotos}
+                selectedPreset={selectedPreset}
+                onRun={handleRun}
+                canRun={selected.size > 0}
+                runStarting={runStarting}
+              />
+            </div>
+            <JobQueuePanel />
           </div>
         </main>
       </div>

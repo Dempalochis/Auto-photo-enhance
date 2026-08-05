@@ -20,8 +20,10 @@ logs/*.csv              one run per file per run: status, exit code, duration, I
 edited_jpg/             output JPEGs
 preview/                example photo rendered through every preset + an index.html gallery
 webapp/server/          Node/Express backend for the web UI (wraps the same scripts above)
+webapp/server/tests/    automated backend tests (node:test) - see Testing below
 webapp/client/          React + Tailwind + Radix UI frontend
 projects/<name>_<date>/ output of web-UI batch runs, one folder per named/dated project
+docs/gpu_spike_findings.md   GPU-acceleration research spike: findings, real timing data, recommendation
 ```
 
 ## How it works
@@ -139,7 +141,7 @@ Open the URL Vite prints (`http://localhost:5173`). The backend listens on `http
 
 ### Using it
 
-**Source folder** — shows the folder currently being scanned for photos (defaults to `photosDir` from the config, or wherever you last pointed it — this choice persists across server restarts). Paste an absolute path and click **Use this folder**, or click **Browse…** for a lightweight folder navigator, since a browser can't hand a real filesystem path to the page from any native picker. The navigator lists every attached drive with its real name (e.g. "LaCie (F:)", same as Windows Explorer) — internal, external/USB, whatever's plugged in — with a **Drives** shortcut always available to jump back to that list from anywhere. Switching folders clears your current photo selection and any open preview (they'd point at photos that may no longer be relevant).
+**Source folder** — shows the folder currently being scanned for photos (defaults to `photosDir` from the config, or wherever you last pointed it — this choice persists across server restarts). Paste an absolute path and click **Use this folder**, or click **Browse…** for a lightweight folder navigator, since a browser can't hand a real filesystem path to the page from any native picker. The navigator lists every attached drive with its real name (e.g. "LaCie (F:)", same as Windows Explorer) — internal, external/USB, whatever's plugged in — with a **Drives** shortcut always available to jump back to that list from anywhere. A **Recent** row lists your last 5 source folders (most recent first) for one-click switching back. Switching folders clears your current photo selection and any open preview (they'd point at photos that may no longer be relevant).
 
 **1. Choose photos to process** — every `.arw` found in the source folder above (recursively, by default), auto-grouped by month then day using the photo's real EXIF capture date (not file-copy time), newest-first by default.
 - Click a photo's checkbox to include it in the batch; **Select day** / **Select month** toggle the whole group at once; **Select all** / **Clear selection** work across whatever's currently visible.
@@ -148,11 +150,13 @@ Open the URL Vite prints (`http://localhost:5173`). The backend listens on `http
 
 **2. Pick a look** — click **Preview** on any one photo to render it through the color-correction profile alone plus all 30 presets, grouped into Nature/Urban/Night/Portrait/Mood sections. Click a tile to select that preset (or the "None" tile for color-correction only). Renders are cached per photo, so previewing the same photo again is instant; a fresh photo takes a few minutes to render all 30 looks (RawTherapee renders each sequentially — see the gotcha below).
 
-**3. Run** — type a project name; the output folder (`projects/<name>_<date>/`) updates live as you type. Click **Run** to batch-convert every selected photo with the chosen preset. Progress updates per-file as the batch runs; a summary (processed/skipped/failed/quarantined) and the output path appear when it's done.
+**3. Run** — type a project name; the output folder (`projects/<name>_<date>/`) updates live as you type. Click **Run** to queue a batch conversion of every selected photo with the chosen preset. Unlike earlier versions, **Run never blocks**: it queues the job and immediately clears your selection so you can pick a different set of photos (from the same folder or a different one) and click **Run** again to queue the next job, without waiting for the first to finish. If the output drive looks low on space for the batch you're about to queue, a warning appears (based on a rough per-file estimate) — it's advisory only and never blocks the run, since already-converted files are always safe either way.
 
-### Gotcha: one job at a time
+**Job queue** — below Run, lists every queued/running/finished job (both batch runs and preset previews), newest first, with live progress and a **Cancel** button for anything not finished yet. Cancelling a job that's actively running kills the underlying RawTherapee process and removes the one file it was mid-write on, so a partial JPEG never gets mistaken for a finished one on a later run; everything converted before the cancel stays on disk. Click **Notify: off** to switch it to **Notify: on** and get a desktop notification (plus a permission prompt the first time) whenever a job finishes — handy since jobs now run in the background instead of holding up the page.
 
-The backend runs only one RawTherapee-invoking job at a time, by design — running several `rawtherapee-cli` processes in parallel was measured to give no real speedup on typical hardware (RawTherapee already saturates available CPU cores per single render), so extra requests queue instead. In practice this means: if you click **Run** while a 30-preset preview is still rendering on another photo, the batch waits for that preview to finish first rather than starting immediately.
+### Gotcha: one job runs at a time
+
+The backend still runs only one RawTherapee-invoking job at a time, by design — running several `rawtherapee-cli` processes in parallel was measured to give no real speedup on typical hardware (RawTherapee already saturates available CPU cores per single render). What changed in V4 is that this queueing no longer blocks the UI: you can keep browsing/filtering/previewing and queue as many jobs as you like, and the Job queue panel shows you where each one stands instead of the page just looking stuck.
 
 ## Watch-folder automation
 
@@ -174,7 +178,16 @@ Polls `-WatchDir` every `PollIntervalSec` seconds. Before processing, it checks 
 
 ## Testing
 
-Each capability below was verified against real sample `.ARW` files during development:
+**Automated tests (web UI backend/frontend)** — `webapp/server` and `webapp/client` each have
+their own automated test suite (`node:test` for the backend, Vitest + React Testing Library for
+the frontend), covering the job manager (persistence, cancellation, crash recovery), path-safety
+checks, source-folder history, and the queue/Run UI behavior:
+```
+cd webapp/server && npm test
+cd webapp/client && npm test
+```
+
+**Manual/pipeline verification** — each capability below was verified against real sample `.ARW` files during development:
 - Fresh run converts all input files; re-run skips everything (idempotency).
 - Missing RawTherapee executable / missing profile fails fast with a clear message.
 - A rejected CLI flag is caught (both via exit code and the `Usage:` banner check) instead of silently "succeeding".
@@ -185,3 +198,6 @@ Each capability below was verified against real sample `.ARW` files during devel
 - Watch-folder: a batch of files dropped at once is processed exactly once, never duplicated across poll cycles; a file still being written is correctly left alone until its size stabilizes.
 - A corrupt/unreadable file fails without aborting the rest of the batch, and is quarantined to `failed/` after repeated failures instead of being retried forever.
 - Web UI, driven end-to-end in a real browser (not just code review): date grouping/sorting, day/month/date-range selection, categorized preset preview with live progress, and a full run producing correct output on disk were all verified working together.
+- Job queue (V4): two batch runs queued back-to-back against real photos without either blocking the UI; cancelling a large in-progress batch stopped it cleanly, left every already-converted file intact, and correctly reported the in-flight file as cancelled rather than falsely claiming it (and every not-yet-started file) as done; a server restart with a job mid-run recovered it as "interrupted" instead of losing or silently resuming it.
+
+See [docs/gpu_spike_findings.md](docs/gpu_spike_findings.md) for the V4 GPU-acceleration research spike: real per-stage timing data gathered from this pipeline, and why no GPU work is recommended yet.

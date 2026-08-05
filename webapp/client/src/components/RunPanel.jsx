@@ -1,5 +1,4 @@
 import { useEffect, useState } from 'react';
-import * as Progress from '@radix-ui/react-progress';
 import { getOutputStatus } from '../api';
 import Hint from './Hint';
 
@@ -18,24 +17,38 @@ function formatSize(bytes) {
 }
 
 export default function RunPanel({
-  projectName, onProjectNameChange, selectedPhotos, selectedPreset, job, onRun, canRun,
+  projectName, onProjectNameChange, selectedPhotos, selectedPreset, onRun, canRun, runStarting,
 }) {
   const folderName = `${sanitize(projectName)}_${todayStr()}`;
-  const running = job && (job.status === 'queued' || job.status === 'running');
-  const items = job?.progress?.items || [];
-  const doneCount = items.filter((i) => i.status === 'done' || i.status === 'failed').length;
-  const pct = items.length > 0 ? Math.round((doneCount / items.length) * 100) : 0;
   const totalSize = selectedPhotos.reduce((sum, p) => sum + p.size, 0);
 
   const [outputStatus, setOutputStatus] = useState(null);
+  const [justQueued, setJustQueued] = useState(false);
+  const [spaceWarning, setSpaceWarning] = useState(null);
   useEffect(() => {
-    const timer = setTimeout(() => {
-      getOutputStatus(projectName).then(setOutputStatus).catch(() => setOutputStatus(null));
-    }, 400);
-    return () => clearTimeout(timer);
-    // re-check right after a run finishes too, since it changes what's in the folder
-  }, [projectName, job?.status]);
+    const check = () => getOutputStatus(projectName).then(setOutputStatus).catch(() => setOutputStatus(null));
+    const debounce = setTimeout(check, 400);
+    // Runs now happen in the background (see JobQueuePanel), so this can't just re-check once
+    // right after a run finishes the way it used to when RunPanel tracked a single job directly -
+    // poll instead, so "this folder already has files" catches up once a background run lands.
+    const interval = setInterval(check, 4000);
+    return () => { clearTimeout(debounce); clearInterval(interval); };
+  }, [projectName]);
   const outputHasFiles = outputStatus?.exists && outputStatus.fileCount > 0 && outputStatus.folderName === folderName;
+
+  // Run always queues a new job instead of disabling while a previous one runs - progress and
+  // history for every queued job live in the JobQueuePanel below, not here. This is just a
+  // brief local confirmation that the click landed.
+  const handleRun = async () => {
+    try {
+      const result = await onRun();
+      setJustQueued(true);
+      setSpaceWarning(result?.spaceWarning || null);
+      setTimeout(() => setJustQueued(false), 3000);
+    } catch {
+      // App.jsx already surfaces the error via the top-level loadError banner.
+    }
+  };
 
   return (
     <div>
@@ -75,41 +88,20 @@ export default function RunPanel({
 
       <button
         type="button"
-        disabled={!canRun || running}
-        onClick={onRun}
+        disabled={!canRun || runStarting}
+        onClick={handleRun}
         className="btn-primary w-full py-2.5 text-sm"
       >
-        {running ? 'Running…' : 'Run'}
+        {runStarting ? 'Queuing…' : 'Run'}
       </button>
 
-      {job && (
-        <div className="mt-4">
-          {running && (
-            <>
-              <Progress.Root value={pct} className="h-2 rounded-[3px] bg-[var(--panel-raised)] overflow-hidden">
-                <Progress.Indicator
-                  className="h-full bg-[var(--amber)] transition-all"
-                  style={{ width: `${pct}%` }}
-                />
-              </Progress.Root>
-              <p className="timestamp mt-1">{doneCount}/{items.length} converted</p>
-            </>
-          )}
-
-          {job.status === 'done' && job.result && (
-            <div className="text-xs mt-2 space-y-1">
-              <p className="text-[var(--cat-nature)] font-medium">Done.</p>
-              <p className="text-[var(--text-dim)]">
-                Processed: {job.result.processed} · Skipped: {job.result.skipped} · Failed: {job.result.failed} · Quarantined: {job.result.quarantined}
-              </p>
-              <p className="text-[var(--text-dim)] break-all">{job.result.outputDir}</p>
-            </div>
-          )}
-
-          {job.status === 'error' && (
-            <p className="text-xs text-[var(--danger)] mt-2">{job.error}</p>
-          )}
-        </div>
+      {justQueued && (
+        <p className="text-xs text-[var(--cat-nature)] mt-2">
+          Queued — see Job queue below for progress.
+        </p>
+      )}
+      {justQueued && spaceWarning && (
+        <p className="text-xs text-[var(--amber)] mt-2">{spaceWarning}</p>
       )}
     </div>
   );

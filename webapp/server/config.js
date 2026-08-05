@@ -26,6 +26,8 @@ function loadConfig() {
     scriptsDir: path.join(REPO_ROOT, 'scripts'),
     thumbCacheDir: path.join(REPO_ROOT, '.webapp_cache', 'thumbnails'),
     previewCacheDir: path.join(REPO_ROOT, '.webapp_cache', 'previews'),
+    stateDir: path.join(REPO_ROOT, '.webapp_cache'),
+    jobsStoreFile: path.join(REPO_ROOT, '.webapp_cache', 'jobs.json'),
   };
 }
 

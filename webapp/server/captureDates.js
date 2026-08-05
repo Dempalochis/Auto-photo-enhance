@@ -79,4 +79,4 @@ async function getCaptureDates(exiftoolPath, filePaths) {
   return Object.assign({}, ...batchResults);
 }
 
-module.exports = { getCaptureDates };
+module.exports = { getCaptureDates, makeBatches };
