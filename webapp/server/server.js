@@ -4,7 +4,8 @@ const express = require('express');
 
 const { loadConfig } = require('./config');
 const {
-  enqueue, getJob, listJobs, cancelJob, initJobStore,
+  enqueue, getJob, listJobs, listExecutionOrder, listLaneTypes, listQueuedIds, reorderQueue,
+  cancelJob, pauseJob, requeueJob, initJobStore,
 } = require('./jobQueue');
 const { runPowerShellScript } = require('./runner');
 const { extractThumbnail } = require('./thumbnails');
@@ -19,6 +20,7 @@ const { checkStartupConfig } = require('./startupChecks');
 const { checkDiskSpaceWarning } = require('./diskSpace');
 const { computeJobTiming } = require('./jobTiming');
 const { addToHistory } = require('./folderHistory');
+const { computeEtas } = require('./jobEta');
 
 const cfg = loadConfig();
 const app = express();
@@ -445,7 +447,9 @@ app.post('/api/run', asyncHandler(async (req, res) => {
 
 // Shared shape for both the list and single-job views (list omits the log - it's the one field
 // that can get large, and the queue panel only needs it once a job is selected/expanded).
-function jobSummary(job) {
+// `etaMs` is computed per-request across the whole queue (see computeAllEtas) since a queued
+// job's ETA depends on every job ahead of it, not just itself - null for terminal jobs.
+function jobSummary(job, etaMs = null, queuePosition = null) {
   return {
     id: job.id,
     type: job.type,
@@ -461,7 +465,36 @@ function jobSummary(job) {
     // Free (derived from timestamps already recorded), so it's included for every job rather
     // than gated behind a debug flag.
     timing: computeJobTiming(job),
+    etaMs,
+    // 0-indexed position among still-queued jobs of the same type (0 = next to start), null for
+    // anything not currently queued. This is the real run order, which can now differ from
+    // creation order once a queue has been reordered - the UI's "Up next" list sorts by this,
+    // not by createdAt.
+    queuePosition,
   };
+}
+
+// Estimated "time until finished" for every currently queued/running job - see jobEta.js.
+// Recomputed fresh per request (cheap: a handful of jobs, no I/O) rather than cached, since it
+// changes constantly as jobs progress. Computed per lane (job type) and merged, since each type
+// now runs in its own independent FIFO (see jobQueue.js) - a queued 'preview' job's wait no
+// longer has anything to do with what's ahead of it in the 'run' lane, or vice versa.
+function computeAllEtas() {
+  const recentByType = (type) => listJobs({ type, status: ['done'] }).slice(0, 5);
+  const merged = new Map();
+  for (const type of listLaneTypes()) {
+    const etas = computeEtas(listExecutionOrder(type), recentByType);
+    etas.forEach((value, key) => merged.set(key, value));
+  }
+  return merged;
+}
+
+function computeAllQueuePositions() {
+  const merged = new Map();
+  for (const type of listLaneTypes()) {
+    listQueuedIds(type).forEach((id, i) => merged.set(id, i));
+  }
+  return merged;
 }
 
 // Backs the job queue/history panel: every queued/running/finished job, newest first, so the
@@ -470,19 +503,59 @@ function jobSummary(job) {
 app.get('/api/jobs', (req, res) => {
   const { type } = req.query;
   const status = req.query.status ? String(req.query.status).split(',') : undefined;
-  res.json({ jobs: listJobs({ type, status }).map(jobSummary) });
+  const etas = computeAllEtas();
+  const positions = computeAllQueuePositions();
+  res.json({
+    jobs: listJobs({ type, status }).map((j) => jobSummary(j, etas.get(j.id) ?? null, positions.get(j.id) ?? null)),
+  });
+});
+
+// Reorders a lane's not-yet-started jobs (drag-and-drop in the "Up next" list). Body:
+// { type: 'run', orderedIds: [...] } - the full desired order for that job type's queue.
+app.post('/api/jobs/reorder', (req, res) => {
+  const { type, orderedIds } = req.body || {};
+  if (typeof type !== 'string' || !type) return res.status(400).json({ error: 'type is required' });
+  if (!Array.isArray(orderedIds) || !orderedIds.every((id) => typeof id === 'string')) {
+    return res.status(400).json({ error: 'orderedIds must be an array of job id strings' });
+  }
+  reorderQueue(type, orderedIds);
+  res.json({ ok: true, orderedIds: listQueuedIds(type) });
 });
 
 app.get('/api/jobs/:id', (req, res) => {
   const job = getJob(req.params.id);
   if (!job) return res.status(404).json({ error: 'job not found' });
-  res.json({ ...jobSummary(job), log: job.log.slice(-100) });
+  const etas = computeAllEtas();
+  const positions = computeAllQueuePositions();
+  res.json({
+    ...jobSummary(job, etas.get(job.id) ?? null, positions.get(job.id) ?? null),
+    log: job.log.slice(-100),
+  });
 });
 
 // Cancels a still-queued job outright, or requests cancellation of an active one (kills its
 // process and cleans up any partial output - see outputFileFor's comment above).
 app.delete('/api/jobs/:id', (req, res) => {
   const result = cancelJob(req.params.id);
+  if (!result.ok) {
+    return res.status(result.error === 'job not found' ? 404 : 400).json({ error: result.error });
+  }
+  res.json({ ok: true });
+});
+
+// Pauses a queued job (it stays in the queue, in place, but stops being eligible to run) or
+// re-queues a paused one (flips it back to runnable, right where it already sits) - see
+// jobQueue.js's pauseJob/requeueJob for why only queued jobs can be paused, never active ones.
+app.post('/api/jobs/:id/pause', (req, res) => {
+  const result = pauseJob(req.params.id);
+  if (!result.ok) {
+    return res.status(result.error === 'job not found' ? 404 : 400).json({ error: result.error });
+  }
+  res.json({ ok: true });
+});
+
+app.post('/api/jobs/:id/requeue', (req, res) => {
+  const result = requeueJob(req.params.id);
   if (!result.ok) {
     return res.status(result.error === 'job not found' ? 404 : 400).json({ error: result.error });
   }

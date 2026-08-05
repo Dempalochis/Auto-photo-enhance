@@ -1,0 +1,12 @@
+[Version]
+AppVersion=5.12
+Version=352
+
+[Resize]
+Enabled=true
+Scale=0.15
+AppliesTo=Full image
+Method=Lanczos
+DataSpecified=0
+Width=900
+Height=900

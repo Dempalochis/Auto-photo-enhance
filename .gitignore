@@ -1,0 +1,12 @@
+*.ARW
+*.arw
+edited_jpg/
+logs/
+incoming/
+failed/
+preview/
+*.attempts
+projects/
+.webapp_cache/
+node_modules/
+webapp/client/dist/

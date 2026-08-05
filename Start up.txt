@@ -1,0 +1,5 @@
+terminal 1:
+node webapp/server/server.js
+
+terminal 2:
+cd webapp/client && npm run dev

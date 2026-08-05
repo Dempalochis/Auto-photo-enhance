@@ -29,6 +29,13 @@ export const listJobs = ({ type, status } = {}) => {
   return jsonFetch(`/api/jobs${qs ? `?${qs}` : ''}`);
 };
 export const cancelJob = (id) => jsonFetch(`/api/jobs/${id}`, { method: 'DELETE' });
+export const reorderJobs = (type, orderedIds) => jsonFetch('/api/jobs/reorder', {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify({ type, orderedIds }),
+});
+export const pauseJob = (id) => jsonFetch(`/api/jobs/${id}/pause`, { method: 'POST' });
+export const requeueJob = (id) => jsonFetch(`/api/jobs/${id}/requeue`, { method: 'POST' });
 export const getOutputStatus = (projectName) => jsonFetch(`/api/output-status?projectName=${encodeURIComponent(projectName)}`);
 export const thumbnailUrl = (relPath) => `/api/photos/thumbnail?path=${encodeURIComponent(relPath)}`;
 
