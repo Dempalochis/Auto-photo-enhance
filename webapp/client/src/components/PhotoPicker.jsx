@@ -103,7 +103,7 @@ function DayGroup({ day, selected, onToggle, onPreview, previewPhoto, previewSta
 const THUMB_SIZE_KEY = 'ape.thumbSize';
 
 export default function PhotoPicker({
-  photos, selected, onToggle, onSelectMany, onPreview, previewPhoto, previewStarting,
+  photos, loading, selected, onToggle, onSelectMany, onPreview, previewPhoto, previewStarting,
 }) {
   const [search, setSearch] = useState('');
   const [minDate, setMinDate] = useState('');
@@ -186,7 +186,16 @@ export default function PhotoPicker({
         )}
       </div>
 
-      {filtered.length === 0 ? (
+      {loading ? (
+        <div className="flex flex-col items-center justify-center gap-3 py-16 text-[var(--text-dim)]">
+          <div
+            role="status"
+            aria-label="Loading photos"
+            className="w-6 h-6 rounded-full border-2 border-[var(--border)] border-t-[var(--amber)] animate-spin"
+          />
+          <p className="text-xs">Loading photos and reading capture dates…</p>
+        </div>
+      ) : filtered.length === 0 ? (
         <p className="text-sm text-[var(--text-dim)]">No photos match the current filters.</p>
       ) : (
         months.map((month) => {

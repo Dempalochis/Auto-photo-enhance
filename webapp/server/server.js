@@ -189,8 +189,15 @@ app.post('/api/source-folder', asyncHandler(async (req, res) => {
   const history = addToHistory(stateStore.read().photosDirHistory, activePhotosDir);
   stateStore.write({ photosDir: activePhotosDir, photosDirHistory: history });
 
+  // Returns the full photo list (not just a count) so the frontend can use it directly instead
+  // of immediately firing a second GET /api/photos that would redo the same EXIF-metadata scan
+  // a second time - listPhotos() (specifically its exiftool batch read) is the expensive part of
+  // switching folders, and doing it twice back-to-back made every folder switch slower than it
+  // needed to be for no benefit.
   const { photos } = await listPhotos();
-  res.json({ path: activePhotosDir, photoCount: photos.length, history });
+  res.json({
+    path: activePhotosDir, photoCount: photos.length, photos, history,
+  });
 }));
 
 app.get('/api/browse-folders', asyncHandler(async (req, res) => {

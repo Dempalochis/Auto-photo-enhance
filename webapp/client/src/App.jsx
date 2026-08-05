@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useEffect, useState } from 'react';
 import * as Tooltip from '@radix-ui/react-tooltip';
 import {
   getPhotos, getPresets, getSourceFolder, setSourceFolder, startPreview, startRun,
@@ -18,6 +18,7 @@ export default function App() {
   const [folderHistory, setFolderHistory] = useState([]);
   const [folderError, setFolderError] = useState(null);
   const [photos, setPhotos] = useState([]);
+  const [photosLoading, setPhotosLoading] = useState(true);
   const [presetNames, setPresetNames] = useState([]);
   const [selected, setSelected] = useState(new Set());
   const [previewPhoto, setPreviewPhoto] = useState(null);
@@ -33,11 +34,8 @@ export default function App() {
   // server's job list directly, which is what lets Run stay usable for queuing another batch
   // instead of waiting on the previous one (see JobQueuePanel.jsx).
 
-  const loadPhotos = useCallback(() => {
-    getPhotos().then((p) => setPhotos(p.photos)).catch((err) => setLoadError(err.message));
-  }, []);
-
   useEffect(() => {
+    setPhotosLoading(true);
     Promise.all([getSourceFolder(), getPhotos(), getPresets()])
       .then(([sf, p, pr]) => {
         setSourceFolderState(sf.path);
@@ -45,7 +43,8 @@ export default function App() {
         setPhotos(p.photos);
         setPresetNames(pr.presets);
       })
-      .catch((err) => setLoadError(err.message));
+      .catch((err) => setLoadError(err.message))
+      .finally(() => setPhotosLoading(false));
   }, []);
 
   useEffect(() => { localStorage.setItem(PROJECT_NAME_KEY, projectName); }, [projectName]);
@@ -53,17 +52,25 @@ export default function App() {
 
   const handleChangeFolder = async (path) => {
     setFolderError(null);
+    // Covers the whole switch, not just the photo re-fetch - the folder-switch request itself
+    // (POST /api/source-folder) is the slow part (it's what actually reads EXIF capture dates
+    // for every file), so the spinner needs to start here, not after it already resolved.
+    setPhotosLoading(true);
     try {
       const result = await setSourceFolder(path);
       setSourceFolderState(result.path);
       setFolderHistory(result.history || []);
+      // The response already includes the full photo list - reuse it instead of firing a
+      // separate GET /api/photos that would redo the same EXIF scan a second time.
+      setPhotos(result.photos || []);
       // Selections/preview reference photos from the old folder - stale once the folder changes.
       setSelected(new Set());
       setPreviewPhoto(null);
       setPreviewJobId(null);
-      loadPhotos();
     } catch (err) {
       setFolderError(err.message);
+    } finally {
+      setPhotosLoading(false);
     }
   };
 
@@ -144,6 +151,7 @@ export default function App() {
               />
               <PhotoPicker
                 photos={photos}
+                loading={photosLoading}
                 selected={selected}
                 onToggle={toggle}
                 onSelectMany={selectMany}
