@@ -5,6 +5,8 @@ async function jsonFetch(url, options) {
   return data;
 }
 
+export const getHealth = () => jsonFetch('/api/health');
+export const getProjects = () => jsonFetch('/api/projects');
 export const getPhotos = () => jsonFetch('/api/photos');
 export const getPresets = () => jsonFetch('/api/presets');
 
@@ -36,6 +38,7 @@ export const reorderJobs = (type, orderedIds) => jsonFetch('/api/jobs/reorder', 
 });
 export const pauseJob = (id) => jsonFetch(`/api/jobs/${id}/pause`, { method: 'POST' });
 export const requeueJob = (id) => jsonFetch(`/api/jobs/${id}/requeue`, { method: 'POST' });
+export const retryJob = (id) => jsonFetch(`/api/jobs/${id}/retry`, { method: 'POST' });
 export const getOutputStatus = (projectName) => jsonFetch(`/api/output-status?projectName=${encodeURIComponent(projectName)}`);
 export const thumbnailUrl = (relPath) => `/api/photos/thumbnail?path=${encodeURIComponent(relPath)}`;
 

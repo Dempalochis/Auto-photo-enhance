@@ -21,6 +21,9 @@ const { checkDiskSpaceWarning } = require('./diskSpace');
 const { computeJobTiming } = require('./jobTiming');
 const { addToHistory } = require('./folderHistory');
 const { computeEtas } = require('./jobEta');
+const { canRetry, resolveRetryFiles } = require('./jobRetry');
+const { presetsFingerprint, isManifestFresh } = require('./previewCache');
+const { listProjects } = require('./projectBrowser');
 
 const cfg = loadConfig();
 const app = express();
@@ -280,10 +283,20 @@ app.post('/api/preview', (req, res) => {
   const cacheDir = path.join(cfg.previewCacheDir, photoKey);
   const manifestPath = path.join(cacheDir, '_manifest.json');
   const currentPresets = listPresetNames();
+  // mtime+size per preset file, not just the name list - so editing a .pp3's contents in place
+  // (same filename) correctly invalidates this photo's cached grid instead of serving it stale
+  // forever (see previewCache.js).
+  const currentFingerprint = presetsFingerprint(cfg.presetsDir, currentPresets);
 
   const job = enqueue('preview', async (job) => {
-    const cached = fs.existsSync(manifestPath)
-      && JSON.stringify(JSON.parse(fs.readFileSync(manifestPath, 'utf8')).presets) === JSON.stringify(currentPresets);
+    let existingManifest = null;
+    try {
+      existingManifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
+    } catch {
+      // No cache yet, or an unreadable/corrupt manifest - isManifestFresh treats either as a
+      // miss below, which just means a normal (re-)render, not a failure.
+    }
+    const cached = isManifestFresh(existingManifest, currentFingerprint);
 
     const urlFor = (label) => `/webapp-cache/previews/${photoKey}/${label}.jpg`;
     const labels = ['00_base_only', ...currentPresets];
@@ -312,7 +325,7 @@ app.post('/api/preview', (req, res) => {
 
       const allOk = job.progress.items.every((i) => i.status === 'done');
       if (allOk) {
-        fs.writeFileSync(manifestPath, JSON.stringify({ presets: currentPresets, generatedAt: Date.now() }));
+        fs.writeFileSync(manifestPath, JSON.stringify({ presetsFingerprint: currentFingerprint, generatedAt: Date.now() }));
       } else if (exitCode !== 0) {
         // leave manifest absent so a retry re-renders; still return whatever succeeded below
       }
@@ -352,40 +365,30 @@ app.get('/api/output-status', (req, res) => {
   res.json({ folderName, exists, fileCount });
 });
 
-app.post('/api/run', asyncHandler(async (req, res) => {
-  const { files, preset, projectName } = req.body || {};
-  if (!Array.isArray(files) || files.length === 0) {
-    return res.status(400).json({ error: 'files must be a non-empty array' });
-  }
-  const absoluteFiles = [];
-  for (const f of files) {
-    const resolved = isSafeRelPath(f) ? resolvePhotoPath(f) : null;
-    if (!resolved || !fs.existsSync(resolved)) {
-      return res.status(400).json({ error: `invalid or missing file: ${f}` });
-    }
-    absoluteFiles.push(resolved);
-  }
-  const availablePresets = listPresetNames();
-  if (preset && preset !== 'none' && !availablePresets.includes(preset)) {
-    return res.status(400).json({ error: `unknown preset: ${preset}` });
-  }
+// Sum of photoCount across every 'run' job still queued or actively running, at this exact
+// moment - all of that work will consume disk space on the output drive before a brand-new job
+// submitted right now even starts. Called just before enqueueing a new job (never after), so the
+// new job itself is never double-counted here.
+function queuedAheadPhotoCount() {
+  return listExecutionOrder('run')
+    .filter(Boolean)
+    .reduce((sum, j) => sum + (j.meta?.photoCount || 0), 0);
+}
 
-  const folderName = projectFolderName(projectName);
-  const outputDir = path.join(cfg.projectsDir, folderName);
-  const logDir = path.join(outputDir, '_logs');
-
-  // Warn-only (see diskSpace.js) - never blocks the run itself.
-  const freeBytes = await getFreeSpaceBytes(outputDir);
-  const spaceWarning = checkDiskSpaceWarning(freeBytes, files.length);
-
-  const job = enqueue('run', async (job) => {
+// Builds the actual run-job function (auto_enhance.ps1 invocation, progress tracking, cancel
+// cleanup) - shared between a fresh POST /api/run and a POST /api/jobs/:id/retry, since both
+// queue exactly the same kind of work, just sourced from a fresh request vs. a job's saved meta.
+function makeRunJobFn({
+  files, absoluteFiles, outputDir, logDir, preset, photosRoot, folderName,
+}) {
+  return async (job) => {
     job.progress = { total: files.length, items: files.map((relPath) => ({ name: relPath, status: 'pending' })) };
 
     const args = [
       '-OutputDir', outputDir,
       '-LogDir', logDir,
       '-ConfigPath', cfg.configPath,
-      '-PhotosRoot', activePhotosDir,
+      '-PhotosRoot', photosRoot,
       '-FilesJson', JSON.stringify(absoluteFiles),
     ];
     if (preset && preset !== 'none') args.push('-Preset', preset);
@@ -431,13 +434,53 @@ app.post('/api/run', asyncHandler(async (req, res) => {
 
     finalizeProgressItems(job.progress.items, { cancelled: job.cancelRequested });
     return { outputDir, folderName, exitCode, ...summary };
-  }, {
+  };
+}
+
+// Read-only browse of past batch-run output folders (projects/<name>_<date>/) - see
+// projectBrowser.js. Newest first by the date encoded in each folder's own name.
+app.get('/api/projects', (req, res) => {
+  res.json({ projects: listProjects(cfg.projectsDir) });
+});
+
+app.post('/api/run', asyncHandler(async (req, res) => {
+  const { files, preset, projectName } = req.body || {};
+  if (!Array.isArray(files) || files.length === 0) {
+    return res.status(400).json({ error: 'files must be a non-empty array' });
+  }
+  const absoluteFiles = [];
+  for (const f of files) {
+    const resolved = isSafeRelPath(f) ? resolvePhotoPath(f) : null;
+    if (!resolved || !fs.existsSync(resolved)) {
+      return res.status(400).json({ error: `invalid or missing file: ${f}` });
+    }
+    absoluteFiles.push(resolved);
+  }
+  const availablePresets = listPresetNames();
+  if (preset && preset !== 'none' && !availablePresets.includes(preset)) {
+    return res.status(400).json({ error: `unknown preset: ${preset}` });
+  }
+
+  const folderName = projectFolderName(projectName);
+  const outputDir = path.join(cfg.projectsDir, folderName);
+  const logDir = path.join(outputDir, '_logs');
+
+  // Warn-only (see diskSpace.js) - never blocks the run itself.
+  const freeBytes = await getFreeSpaceBytes(outputDir);
+  const spaceWarning = checkDiskSpaceWarning(freeBytes, files.length, queuedAheadPhotoCount());
+
+  const job = enqueue('run', makeRunJobFn({
+    files, absoluteFiles, outputDir, logDir, preset, photosRoot: activePhotosDir, folderName,
+  }), {
     projectName: sanitizeProjectName(projectName),
     preset: preset && preset !== 'none' ? preset : 'none',
     photoCount: files.length,
     sourceFolder: activePhotosDir,
     outputDir,
     folderName,
+    // Original relPaths, kept so a later retry (POST /api/jobs/:id/retry) can reconstruct this
+    // exact request without the caller needing to re-select photos from scratch.
+    files,
   });
 
   res.json({ jobId: job.id, spaceWarning });
@@ -561,6 +604,52 @@ app.post('/api/jobs/:id/requeue', (req, res) => {
   }
   res.json({ ok: true });
 });
+
+// Retries a job that finished without succeeding (error/cancelled/interrupted): enqueues a
+// brand-new job with the original job's exact params, rather than mutating the old record - the
+// original stays in history as an accurate account of what happened, matching how cancel already
+// preserves history today. Re-resolves files against the *original* job's source folder (not
+// necessarily today's active folder) and re-targets the *original* output folder (not a freshly
+// re-dated one), so retrying a project on a later day still benefits from the pipeline's own
+// idempotency check instead of redoing already-converted work in a brand-new dated folder. See
+// jobRetry.js for the validation logic.
+app.post('/api/jobs/:id/retry', asyncHandler(async (req, res) => {
+  const job = getJob(req.params.id);
+  if (!job) return res.status(404).json({ error: 'job not found' });
+
+  const retryCheck = canRetry(job);
+  if (!retryCheck.ok) return res.status(400).json({ error: retryCheck.error });
+
+  const filesCheck = resolveRetryFiles(job.meta);
+  if (!filesCheck.ok) return res.status(400).json({ error: filesCheck.error });
+
+  const {
+    preset, outputDir, folderName, sourceFolder, projectName, files,
+  } = job.meta;
+  const availablePresets = listPresetNames();
+  if (preset && preset !== 'none' && !availablePresets.includes(preset)) {
+    return res.status(400).json({ error: `preset no longer available: ${preset}` });
+  }
+
+  const logDir = path.join(outputDir, '_logs');
+  const freeBytes = await getFreeSpaceBytes(outputDir);
+  const spaceWarning = checkDiskSpaceWarning(freeBytes, files.length, queuedAheadPhotoCount());
+
+  const newJob = enqueue('run', makeRunJobFn({
+    files, absoluteFiles: filesCheck.absoluteFiles, outputDir, logDir, preset, photosRoot: sourceFolder, folderName,
+  }), {
+    projectName,
+    preset: preset || 'none',
+    photoCount: files.length,
+    sourceFolder,
+    outputDir,
+    folderName,
+    files,
+    retryOf: job.id,
+  });
+
+  res.json({ jobId: newJob.id, spaceWarning });
+}));
 
 // Registered after every route: catches errors passed via next(err) that never reach
 // asyncHandler - most notably express.json() rejecting a malformed request body - and returns

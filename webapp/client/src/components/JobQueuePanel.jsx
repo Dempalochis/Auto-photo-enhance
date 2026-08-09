@@ -7,11 +7,12 @@ import {
 } from '@dnd-kit/sortable';
 import { CSS } from '@dnd-kit/utilities';
 import {
-  listJobs, cancelJob, reorderJobs, pauseJob, requeueJob,
+  listJobs, cancelJob, reorderJobs, pauseJob, requeueJob, retryJob,
 } from '../api';
 import { detectFinishedJobs, snapshotStatuses } from '../jobTransitions';
 import { computeReorderedIds } from '../dragReorder';
 import { formatEta } from '../formatDuration';
+import { matchesHistoryFilter } from '../historyFilter';
 import Hint from './Hint';
 
 const NOTIFY_KEY = 'ape.notifyOnJobDone';
@@ -36,6 +37,14 @@ const STATUS_CLASS = {
   cancelled: 'text-[var(--text-dim)]',
   interrupted: 'text-[var(--danger)]',
 };
+
+// Mirrors jobRetry.js's RETRYABLE_STATUSES on the server - a 'run' job that finished without
+// succeeding can be retried; nothing else can (a 'preview' job just re-renders for free the next
+// time its photo is previewed, and a still-open or successfully-'done' job has nothing to retry).
+const RETRYABLE_STATUSES = new Set(['error', 'cancelled', 'interrupted']);
+function isRetryable(job) {
+  return job.type === 'run' && RETRYABLE_STATUSES.has(job.status);
+}
 
 function jobLabel(job) {
   if (job.type === 'run') return job.meta?.projectName || 'Batch run';
@@ -63,7 +72,7 @@ function progressPct(job) {
 // "Up next" section wraps this in drag-and-drop machinery (see SortableJobRow below); everywhere
 // else it renders plain, since reordering only makes sense for jobs that haven't started yet.
 function JobRow({
-  job, onCancel, cancelling, onPause, onRequeue, pausing, dragHandleProps, isDragging,
+  job, onCancel, cancelling, onPause, onRequeue, pausing, onRetry, retrying, dragHandleProps, isDragging,
 }) {
   const pct = progressPct(job);
   const cancellable = job.status === 'queued' || job.status === 'running' || job.status === 'paused';
@@ -120,6 +129,17 @@ function JobRow({
               className="btn-secondary text-[11px] px-2 py-1"
             >
               Cancel
+            </button>
+          )}
+          {isRetryable(job) && onRetry && (
+            <button
+              type="button"
+              onClick={() => onRetry(job.id)}
+              disabled={retrying}
+              className="btn-secondary text-[11px] px-2 py-1"
+              title="Queue a new job with the same photos, preset, and output folder as this one"
+            >
+              Retry
             </button>
           )}
         </div>
@@ -195,12 +215,20 @@ export default function JobQueuePanel({ historyLimit = 8 }) {
   const [error, setError] = useState(null);
   const [cancellingId, setCancellingId] = useState(null);
   const [pausingId, setPausingId] = useState(null);
+  const [retryingId, setRetryingId] = useState(null);
   const [notifyEnabled, setNotifyEnabled] = useState(() => localStorage.getItem(NOTIFY_KEY) === 'true');
   const [toast, setToast] = useState(null);
   // Optimistic local override of the "Up next" order while a drag is in flight / just landed -
   // cleared as soon as the next poll confirms the server's own order, so this never drifts from
   // reality for long even if the reorder request itself fails silently for some reason.
   const [localRunQueueOrder, setLocalRunQueueOrder] = useState(null);
+  // History browsing: the main poll below already fetches every kept job in one unpaginated
+  // response (see historyFilter.js), so "page/search the rest of the jobs kept" is a client-side
+  // slice + filter over data already in memory, not a second endpoint. historyPageSize grows via
+  // "Load more"; historyQuery resets it back to the default page so a fresh search isn't stuck
+  // showing however many items a previous "Load more" click had expanded to.
+  const [historyQuery, setHistoryQuery] = useState('');
+  const [historyPageSize, setHistoryPageSize] = useState(historyLimit);
   const timerRef = useRef(null);
   const toastTimerRef = useRef(null);
   const prevStatusRef = useRef(new Map());
@@ -299,6 +327,19 @@ export default function JobQueuePanel({ historyLimit = 8 }) {
     }
   };
 
+  const handleRetry = async (id) => {
+    setRetryingId(id);
+    try {
+      await retryJob(id);
+      const data = await listJobs();
+      setJobs(data.jobs);
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setRetryingId(null);
+    }
+  };
+
   const activeJobs = jobs.filter((j) => j.status === 'running');
   // Paused jobs stay in "Up next" (see jobQueue.js: pausing doesn't remove a job from its lane,
   // just marks it un-runnable in place) so they can still be dragged and re-queued from the same
@@ -309,9 +350,19 @@ export default function JobQueuePanel({ historyLimit = 8 }) {
   const otherQueued = jobs
     .filter((j) => j.status === 'queued' && j.type !== 'run')
     .sort((a, b) => (a.queuePosition ?? 0) - (b.queuePosition ?? 0));
-  const history = jobs
-    .filter((j) => !['running', 'queued', 'paused'].includes(j.status))
-    .slice(0, historyLimit); // already newest-first from the API
+  // Already newest-first from the API. allHistory is every terminal job currently held in
+  // memory (up to the store's history cap); filteredHistory narrows that by the History search
+  // box; history is just the currently-visible page of filteredHistory ("Load more" grows
+  // historyPageSize rather than fetching anything new).
+  const allHistory = jobs.filter((j) => !['running', 'queued', 'paused'].includes(j.status));
+  const filteredHistory = historyQuery ? allHistory.filter((j) => matchesHistoryFilter(j, historyQuery)) : allHistory;
+  const history = filteredHistory.slice(0, historyPageSize);
+  const hasMoreHistory = filteredHistory.length > history.length;
+
+  const handleHistoryQueryChange = (value) => {
+    setHistoryQuery(value);
+    setHistoryPageSize(historyLimit); // a fresh search starts back at the default page size
+  };
 
   const displayRunQueue = localRunQueueOrder
     ? localRunQueueOrder.map((id) => runQueued.find((j) => j.id === id)).filter(Boolean)
@@ -333,7 +384,7 @@ export default function JobQueuePanel({ historyLimit = 8 }) {
     }
   };
 
-  const totalCount = activeJobs.length + runQueued.length + otherQueued.length + history.length;
+  const totalCount = activeJobs.length + runQueued.length + otherQueued.length + allHistory.length;
   const activeCount = activeJobs.length + runQueued.length + otherQueued.length;
 
   return (
@@ -412,14 +463,46 @@ export default function JobQueuePanel({ historyLimit = 8 }) {
         </div>
       )}
 
-      {history.length > 0 && (
+      {allHistory.length > 0 && (
         <div>
-          <p className="field-label mb-1.5">History</p>
-          <ul className="space-y-2">
-            {history.map((job) => (
-              <JobRow key={job.id} job={job} onCancel={handleCancel} cancelling={cancellingId === job.id} />
-            ))}
-          </ul>
+          <div className="flex items-center justify-between gap-2 mb-1.5">
+            <p className="field-label">History</p>
+            <input
+              type="text"
+              value={historyQuery}
+              onChange={(e) => handleHistoryQueryChange(e.target.value)}
+              placeholder="Filter by project or preset…"
+              aria-label="Filter history by project or preset"
+              className="text-[11px] bg-[var(--panel-raised)] border border-[var(--border)] rounded-[3px] px-2 py-1 w-40 min-w-0"
+            />
+          </div>
+
+          {history.length === 0 ? (
+            <p className="text-xs text-[var(--text-dim)]">No history matches &quot;{historyQuery}&quot;.</p>
+          ) : (
+            <ul className="space-y-2">
+              {history.map((job) => (
+                <JobRow
+                  key={job.id}
+                  job={job}
+                  onCancel={handleCancel}
+                  cancelling={cancellingId === job.id}
+                  onRetry={handleRetry}
+                  retrying={retryingId === job.id}
+                />
+              ))}
+            </ul>
+          )}
+
+          {hasMoreHistory && (
+            <button
+              type="button"
+              onClick={() => setHistoryPageSize((n) => n + historyLimit)}
+              className="btn-secondary text-[11px] px-2 py-1 mt-2 w-full"
+            >
+              {`Load more (${filteredHistory.length - history.length} more)`}
+            </button>
+          )}
         </div>
       )}
     </div>

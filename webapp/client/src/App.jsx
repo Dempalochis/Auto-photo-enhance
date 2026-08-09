@@ -9,6 +9,8 @@ import PhotoPicker from './components/PhotoPicker';
 import PresetPreview from './components/PresetPreview';
 import RunPanel from './components/RunPanel';
 import JobQueuePanel from './components/JobQueuePanel';
+import HealthIndicator from './components/HealthIndicator';
+import ProjectBrowser from './components/ProjectBrowser';
 
 const PROJECT_NAME_KEY = 'ape.lastProjectName';
 const PRESET_KEY = 'ape.lastPreset';
@@ -128,9 +130,12 @@ export default function App() {
   return (
     <Tooltip.Provider delayDuration={200}>
       <div className="min-h-screen">
-        <header className="border-b border-[var(--border)] px-6 py-4">
-          <h1 className="text-xl">Auto Photo Enhance</h1>
-          <p className="eyebrow mt-1">Raw color correction + preset looks · RawTherapee</p>
+        <header className="border-b border-[var(--border)] px-6 py-4 flex items-start justify-between gap-4">
+          <div>
+            <h1 className="text-xl">Auto Photo Enhance</h1>
+            <p className="eyebrow mt-1">Raw color correction + preset looks · RawTherapee</p>
+          </div>
+          <HealthIndicator />
         </header>
 
         {loadError && (
@@ -181,6 +186,7 @@ export default function App() {
               />
             </div>
             <JobQueuePanel />
+            <ProjectBrowser />
           </div>
         </main>
       </div>
