@@ -12,7 +12,7 @@ ReweightingIterates=0
 
 [Vibrance]
 Enabled=true
-Saturated=26
+Saturated=13
 Pastels=10
 
 [ColorToning]
@@ -28,7 +28,7 @@ Bluemed=0
 Redhigh=8
 Greenhigh=2
 Bluehigh=-6
-Strength=30
+Strength=18
 Autosat=true
 SatProtectionThreshold=30
 SaturatedOpacity=80

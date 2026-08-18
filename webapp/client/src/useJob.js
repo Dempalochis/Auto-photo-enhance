@@ -13,6 +13,11 @@ export function useJob(jobId) {
     }
 
     let cancelled = false;
+    // Drop the previous job's data immediately, before the first poll for the new id resolves -
+    // otherwise a caller (e.g. PresetPreview switching to a newly-clicked photo) would briefly
+    // render the old job's thumbnails/progress under the new jobId instead of the fresh
+    // "preparing" state.
+    setJob(null);
 
     const poll = async () => {
       try {

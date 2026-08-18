@@ -39,6 +39,19 @@ function projectFolderName(projectName, dateStr = new Date().toISOString().slice
   return `${sanitizeProjectName(projectName)}_${dateStr}`;
 }
 
+// Mirrors auto_enhance.ps1's own output naming exactly, so a cancelled job can find and delete
+// the JPEG it was in the middle of writing - otherwise a half-written file left behind would be
+// silently treated as "already converted" by the pipeline's own idempotency check on every future
+// run of this project. No preset (or 'none') keeps the original base name, unchanged from before
+// presets existed; a selected preset appends "_<preset>" so different looks of the same source
+// photo don't collide/overwrite each other in the output folder.
+function outputFileFor(outputDir, relPath, preset) {
+  const relDir = path.posix.dirname(relPath); // '.' for a top-level file
+  const base = path.posix.basename(relPath, path.posix.extname(relPath));
+  const outBase = preset && preset !== 'none' ? `${base}_${preset}` : base;
+  return relDir === '.' ? path.join(outputDir, `${outBase}.jpg`) : path.join(outputDir, relDir, `${outBase}.jpg`);
+}
+
 module.exports = {
-  isSafeRelPath, resolvePhotoPath, cacheKeyFor, sanitizeProjectName, projectFolderName,
+  isSafeRelPath, resolvePhotoPath, cacheKeyFor, sanitizeProjectName, projectFolderName, outputFileFor,
 };

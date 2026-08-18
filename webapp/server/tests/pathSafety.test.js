@@ -2,7 +2,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const path = require('node:path');
 const {
-  isSafeRelPath, resolvePhotoPath, cacheKeyFor, sanitizeProjectName, projectFolderName,
+  isSafeRelPath, resolvePhotoPath, cacheKeyFor, sanitizeProjectName, projectFolderName, outputFileFor,
 } = require('../pathSafety');
 
 test('isSafeRelPath accepts plain and nested .arw paths', () => {
@@ -62,4 +62,25 @@ test('sanitizeProjectName strips filesystem-unsafe characters and falls back on 
 test('projectFolderName appends the given date', () => {
   assert.equal(projectFolderName('Summer Wedding', '2026-08-04'), 'Summer Wedding_2026-08-04');
   assert.equal(projectFolderName('', '2026-08-04'), 'project_2026-08-04');
+});
+
+test('outputFileFor keeps the original base name when no preset is selected', () => {
+  const out = path.resolve('C:\\out');
+  assert.equal(outputFileFor(out, 'DSC00001.ARW', null), path.join(out, 'DSC00001.jpg'));
+  assert.equal(outputFileFor(out, 'DSC00001.ARW', undefined), path.join(out, 'DSC00001.jpg'));
+  assert.equal(outputFileFor(out, 'DSC00001.ARW', 'none'), path.join(out, 'DSC00001.jpg'));
+});
+
+test('outputFileFor appends _<preset> to the base name when a preset is selected', () => {
+  const out = path.resolve('C:\\out');
+  assert.equal(outputFileFor(out, 'DSC00001.ARW', 'teal_orange'), path.join(out, 'DSC00001_teal_orange.jpg'));
+});
+
+test('outputFileFor preserves a nested subfolder either way', () => {
+  const out = path.resolve('C:\\out');
+  assert.equal(outputFileFor(out, 'Ceremony/DSC00001.ARW', null), path.join(out, 'Ceremony', 'DSC00001.jpg'));
+  assert.equal(
+    outputFileFor(out, 'Ceremony/DSC00001.ARW', 'teal_orange'),
+    path.join(out, 'Ceremony', 'DSC00001_teal_orange.jpg'),
+  );
 });

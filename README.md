@@ -1,6 +1,6 @@
 # Auto-photo-enhance
 
-Automated batch enhancement of Sony `.ARW` raw photos to `.jpg`, using [RawTherapee](https://rawtherapee.com/)'s command-line renderer (`rawtherapee-cli`). Two ways to use it: a one-click `.bat` for a plain batch conversion, or the [web UI](#web-ui) for browsing/filtering photos by date, comparing all 30 presets on a photo before committing, and running named/dated project batches.
+Automated batch enhancement of Sony `.ARW` raw photos to `.jpg`, using [RawTherapee](https://rawtherapee.com/)'s command-line renderer (`rawtherapee-cli`). Two ways to use it: a one-click `.bat` for a plain batch conversion, or the [web UI](#web-ui) for browsing/filtering photos by date, comparing all 32 presets on a photo before committing, and running named/dated project batches.
 
 ## Quick start (CLI)
 
@@ -29,7 +29,7 @@ docs/gpu_spike_findings.md   GPU-acceleration research spike: findings, real tim
 ## How it works
 
 1. `auto_enhance.ps1` scans an input directory for `*.arw` files and, for each one not already converted, calls `rawtherapee-cli -p <profile> -o <out>.jpg -j<quality> -Y -c <file>`.
-2. **Idempotent**: if `edited_jpg/<name>.jpg` already exists, the file is skipped. Safe to re-run or schedule repeatedly.
+2. **Idempotent**: if the output file already exists, the file is skipped. Safe to re-run or schedule repeatedly. Output naming: `edited_jpg/<name>.jpg` when no preset is selected (unchanged from before presets existed), or `edited_jpg/<name>_<preset>.jpg` when one is — so re-running the same photo with a different preset produces a separate file instead of overwriting the previous look.
 3. **Per-photo profile selection**: if `autoProfile.enabled` is `true` in the config and `exiftoolPath` points at a working [ExifTool](https://exiftool.org/) install, each file's ISO is read and used to pick between `lowIsoProfile` and `highIsoProfile` (threshold: `isoThreshold`). Pass `-Profile <name>` or `-ProfilePath <file.pp3>` explicitly to bypass this and force one profile for the whole run.
 4. **Failure handling**: a failed file (bad exit code, or RawTherapee silently printing its help text instead of processing) is retried on the next run. After `quarantineAfterFailures` (default 2) consecutive failures, the file is moved to `<input dir>/failed/` so it stops being retried forever.
 5. Every run writes a CSV to `logs/` with one row per file (status, exit code, duration, ISO read, profile used, any failure note) and prints a summary (`Processed / Skipped / Failed / Quarantined`). Exit code is non-zero if anything failed.
@@ -63,7 +63,7 @@ rawtherapee-cli -p profiles/default.pp3 -p presets/teal_orange.pp3 -o out.jpg -j
 
 Split-tone/two-tone looks use RawTherapee's real `[ColorToning]` tool (`Method=Splitco`, verified against RawTherapee's own source code) — independent RGB pushes for shadows/mids/highlights, not a hand-rolled color-curve hack.
 
-### The 30 presets (`presets/*.pp3`)
+### The 32 presets (`presets/*.pp3`)
 
 | Preset | Category | Look |
 |---|---|---|
@@ -71,6 +71,7 @@ Split-tone/two-tone looks use RawTherapee's real `[ColorToning]` tool (`Method=S
 | `golden_hour` | Nature | Warm push, protected highlights, soft vignette |
 | `forest_moody` | Nature | Deep, cool-shadowed greens, atmospheric |
 | `dramatic_sky` | Nature | Punchy clarity/contrast for big-sky landscapes |
+| `dramatic_mono` | Nature | Bold, contrast-driven B&W with a heavier blue/cyan pull for real sky drama — distinct from `street_mono`/`editorial_mono`'s subtler documentary/portrait tuning |
 | `autumn_glow` | Nature | Boosted warm oranges/reds for foliage |
 | `misty_morning` | Nature | Cool, soft, desaturated fog/mist look |
 | `vibrant_bloom` | Nature | Punchy florals/greens, spring vibrance |
@@ -97,6 +98,7 @@ Split-tone/two-tone looks use RawTherapee's real `[ColorToning]` tool (`Method=S
 | `punch_pop` | Mood | Bold modern high-clarity, high-contrast, saturated |
 | `cinematic_drama` | Mood | Deep contrast, cool-shadowed cinematic drama |
 | `vibrant_travel` | Mood | Bold, saturated, high-clarity adventure/travel look |
+| `analog_fade` | Mood | Muted, faded analog/film color palette — lifted blacks, gentle warm-highlight/cool-shadow split, general-purpose (not portrait-specific like `vintage_film_portrait`) |
 
 These were verified for correct RawTherapee syntax, checked for measurable difference from the base and from each other, and visually inspected — but the reference photo used during development was a daytime indoor car-show shot, so effects tuned for foliage/skin/neon-lit night scenes (`nature_earth`, `moody_warm`, `neon_nights`, etc.) will read more strongly on photos with that actual content. Run `preview_presets.ps1` against a real photo from the relevant scenario before trusting a look for a shoot.
 
@@ -148,7 +150,7 @@ Open the URL Vite prints (`http://localhost:5173`). The backend listens on `http
 - **Search filename**, and **From/To date** (day-level only, ignores time-of-day) narrow the grid down.
 - **Compact/Comfortable** toggles thumbnail size; sort **Newest/Oldest first** flips the order. Both, plus your last project name and preset choice, are remembered in the browser between sessions.
 
-**2. Pick a look** — click **Preview** on any one photo to render it through the color-correction profile alone plus all 30 presets, grouped into Nature/Urban/Night/Portrait/Mood sections. Click a tile to select that preset (or the "None" tile for color-correction only). Renders are cached per photo, so previewing the same photo again is instant; a fresh photo takes roughly 3 minutes to render all 30 looks — previews are deliberately rendered small and fast (`-f` + a forced resize, ~900px, plus rendering a few presets at once) rather than at full quality/resolution, since this view is for comparing looks, not judging fine detail. A preview also no longer waits behind a queued/running batch **Run** — the two use independent lanes, so both progress at the same time.
+**2. Pick a look** — every preset tile (grouped into Nature/Urban/Night/Portrait/Mood sections, plus "None" for color-correction only) is always visible and selectable, even before previewing anything - click a tile any time to choose that preset for **Run**. Click **Preview** on any one photo to actually render it through the color-correction profile plus all 32 presets so the tiles show real thumbnails instead of just names; clicking **Preview** again (on the same or a different photo) overwrites the tiles in place as each new render finishes. Renders are cached per photo on disk, so previewing the same photo again - including reopening the page later - is instant, and the last-previewed photo's thumbnails are restored automatically on reload; a genuinely fresh photo takes a little over 3 minutes to render all 32 looks — previews are deliberately rendered small and fast (`-f` + a forced resize, ~900px, plus rendering a few presets at once) rather than at full quality/resolution, since this view is for comparing looks, not judging fine detail. A preview also no longer waits behind a queued/running batch **Run** — the two use independent lanes, so both progress at the same time.
 
 **3. Run** — type a project name; the output folder (`projects/<name>_<date>/`) updates live as you type. Click **Run** to queue a batch conversion of every selected photo with the chosen preset. Unlike earlier versions, **Run never blocks**: it queues the job and immediately clears your selection so you can pick a different set of photos (from the same folder or a different one) and click **Run** again to queue the next job, without waiting for the first to finish. If the output drive looks low on space for the batch you're about to queue, a warning appears (based on a rough per-file estimate) — it's advisory only and never blocks the run, since already-converted files are always safe either way.
 

@@ -1,14 +1,10 @@
-[White Balance]
-Enabled=true
-TemperatureBias=250
-
 [Luminance Curve]
 Enabled=true
 Contrast=14
 
 [Vibrance]
 Enabled=true
-Saturated=20
+Saturated=11
 Pastels=6
 
 [ColorToning]
@@ -24,7 +20,7 @@ Bluemed=0
 Redhigh=16
 Greenhigh=4
 Bluehigh=-10
-Strength=45
+Strength=20
 Autosat=true
 SatProtectionThreshold=25
 SaturatedOpacity=85

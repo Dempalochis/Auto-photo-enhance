@@ -1,7 +1,3 @@
-[White Balance]
-Enabled=true
-TemperatureBias=-100
-
 [Exposure]
 Black=12
 
@@ -27,7 +23,7 @@ Bluemed=0
 Redhigh=0
 Greenhigh=2
 Bluehigh=2
-Strength=30
+Strength=18
 Autosat=true
 SatProtectionThreshold=30
 SaturatedOpacity=80

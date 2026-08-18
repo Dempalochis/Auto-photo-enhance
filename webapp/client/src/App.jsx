@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import * as Tooltip from '@radix-ui/react-tooltip';
 import {
   getPhotos, getPresets, getSourceFolder, setSourceFolder, startPreview, startRun,
@@ -14,6 +14,7 @@ import ProjectBrowser from './components/ProjectBrowser';
 
 const PROJECT_NAME_KEY = 'ape.lastProjectName';
 const PRESET_KEY = 'ape.lastPreset';
+const PREVIEW_PHOTO_KEY = 'ape.lastPreviewPhoto';
 
 export default function App() {
   const [sourceFolder, setSourceFolderState] = useState('');
@@ -23,8 +24,13 @@ export default function App() {
   const [photosLoading, setPhotosLoading] = useState(true);
   const [presetNames, setPresetNames] = useState([]);
   const [selected, setSelected] = useState(new Set());
-  const [previewPhoto, setPreviewPhoto] = useState(null);
+  // Remembered across reloads so the preset grid's thumbnails ("2. Pick a look") are still there
+  // when the page reopens, not just the preset choice itself - restored below once photos load,
+  // by re-requesting a preview for it (the server's own on-disk cache means that's instant when
+  // nothing has changed, not a re-render).
+  const [previewPhoto, setPreviewPhoto] = useState(() => localStorage.getItem(PREVIEW_PHOTO_KEY) || null);
   const [previewJobId, setPreviewJobId] = useState(null);
+  const restoredPreviewRef = useRef(false);
   const [selectedPreset, setSelectedPreset] = useState(() => localStorage.getItem(PRESET_KEY) || 'none');
   const [projectName, setProjectName] = useState(() => localStorage.getItem(PROJECT_NAME_KEY) || '');
   const [loadError, setLoadError] = useState(null);
@@ -51,6 +57,28 @@ export default function App() {
 
   useEffect(() => { localStorage.setItem(PROJECT_NAME_KEY, projectName); }, [projectName]);
   useEffect(() => { localStorage.setItem(PRESET_KEY, selectedPreset); }, [selectedPreset]);
+  useEffect(() => {
+    if (previewPhoto) localStorage.setItem(PREVIEW_PHOTO_KEY, previewPhoto);
+    else localStorage.removeItem(PREVIEW_PHOTO_KEY);
+  }, [previewPhoto]);
+
+  // Once, after the first photo list lands: re-request a preview for whatever photo was last
+  // previewed (restored from localStorage above) so its thumbnails come back without the user
+  // re-clicking Preview - the server's on-disk preview cache means this resolves instantly rather
+  // than re-rendering, unless the presets or photo genuinely changed since last time. Skipped
+  // (and the stale reference dropped) if that photo isn't in the current folder's list at all -
+  // e.g. the folder was switched in another tab since the last visit.
+  useEffect(() => {
+    if (photosLoading || restoredPreviewRef.current) return;
+    restoredPreviewRef.current = true;
+    if (!previewPhoto) return;
+    if (!photos.some((p) => p.relPath === previewPhoto)) {
+      setPreviewPhoto(null);
+      return;
+    }
+    handlePreview(previewPhoto);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [photosLoading, photos]);
 
   const handleChangeFolder = async (path) => {
     setFolderError(null);
@@ -168,6 +196,7 @@ export default function App() {
             <PresetPreview
               previewPhoto={previewPhoto}
               job={previewJob}
+              presetNames={presetNames}
               selectedPreset={selectedPreset}
               onSelectPreset={setSelectedPreset}
             />

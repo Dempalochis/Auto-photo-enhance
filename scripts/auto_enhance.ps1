@@ -117,7 +117,11 @@ foreach ($arw in $arwFiles) {
     $relSubfolder = Get-RelativeSubfolder $mirrorRoot $arw.DirectoryName
     $outSubdir = if ($relSubfolder) { Join-Path $OutputDir $relSubfolder } else { $OutputDir }
     if ($relSubfolder) { New-Item -ItemType Directory -Force -Path $outSubdir | Out-Null }
-    $outFile = Join-Path $outSubdir "$($arw.BaseName).jpg"
+    # No preset (plain color correction) keeps the original base name, unchanged from before
+    # presets existed. A selected preset appends "_<preset>" so different looks rendered from the
+    # same source photo land as separate files instead of overwriting each other.
+    $outBaseName = if ($presetPath) { "$($arw.BaseName)_$Preset" } else { $arw.BaseName }
+    $outFile = Join-Path $outSubdir "$outBaseName.jpg"
 
     if (Test-Path -LiteralPath $outFile) {
         Write-Host "Skipping $($arw.Name) (output already exists)"

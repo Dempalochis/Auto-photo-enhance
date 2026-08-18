@@ -1,7 +1,3 @@
-[White Balance]
-Enabled=true
-TemperatureBias=150
-
 [Luminance Curve]
 Enabled=true
 Contrast=-6

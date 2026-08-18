@@ -4,7 +4,7 @@ Contrast=10
 
 [Vibrance]
 Enabled=true
-Saturated=22
+Saturated=12
 Pastels=10
 
 [ColorToning]
@@ -20,7 +20,7 @@ Bluemed=-2
 Redhigh=2
 Greenhigh=0
 Bluehigh=-2
-Strength=20
+Strength=14
 Autosat=true
 SatProtectionThreshold=30
 SaturatedOpacity=80

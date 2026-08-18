@@ -14,6 +14,7 @@ const { makeStateStore } = require('./state');
 const { listDrives, getFreeSpaceBytes } = require('./drives');
 const {
   isSafeRelPath, resolvePhotoPath: resolvePhotoPathPure, cacheKeyFor, sanitizeProjectName, projectFolderName,
+  outputFileFor,
 } = require('./pathSafety');
 const { finalizeProgressItems } = require('./runProgress');
 const { checkStartupConfig } = require('./startupChecks');
@@ -344,17 +345,6 @@ app.post('/api/preview', (req, res) => {
 
 // ---- run: batch-convert selected files with color correction + chosen preset ----
 
-// Mirrors auto_enhance.ps1's own output naming ($outSubdir/$BaseName.jpg) so a cancelled job
-// can find and delete the JPEG it was in the middle of writing - otherwise a half-written file
-// left behind would be silently treated as "already converted" by the pipeline's own
-// idempotency check (README: "if edited_jpg/<name>.jpg already exists, the file is skipped")
-// on every future run of this project.
-function outputFileFor(outputDir, relPath) {
-  const relDir = path.posix.dirname(relPath); // '.' for a top-level file
-  const base = path.posix.basename(relPath, path.posix.extname(relPath));
-  return relDir === '.' ? path.join(outputDir, `${base}.jpg`) : path.join(outputDir, relDir, `${base}.jpg`);
-}
-
 // Lets the UI proactively warn ("this folder already has files in it") before Run is even
 // clicked, rather than only finding out from the log after a batch has already started.
 app.get('/api/output-status', (req, res) => {
@@ -412,7 +402,7 @@ function makeRunJobFn({
     // though it's actually fine on disk - cosmetic, not a correctness problem.
     job.onCancel = () => {
       if (current) {
-        const outFile = outputFileFor(outputDir, current.name);
+        const outFile = outputFileFor(outputDir, current.name, preset);
         fs.rm(outFile, { force: true }, () => {});
         current.status = 'cancelled';
       }
@@ -577,7 +567,7 @@ app.get('/api/jobs/:id', (req, res) => {
 });
 
 // Cancels a still-queued job outright, or requests cancellation of an active one (kills its
-// process and cleans up any partial output - see outputFileFor's comment above).
+// process and cleans up any partial output - see outputFileFor's comment in pathSafety.js).
 app.delete('/api/jobs/:id', (req, res) => {
   const result = cancelJob(req.params.id);
   if (!result.ok) {
