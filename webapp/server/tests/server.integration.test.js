@@ -201,3 +201,28 @@ test('POST /api/jobs/:id/retry rejects an errored run job whose meta predates th
   const body = await res.json();
   assert.match(body.error, /no retryable file list/);
 })));
+
+// V8 Phase 3: production build serving. Coupled to this dev machine's actual
+// webapp/client/dist/ (built via `npm run build`), same tradeoff the file header already
+// documents for config/config.json - skips cleanly if dist/ hasn't been built yet rather than
+// failing, since dist/ is gitignored build output, not something a fresh clone/CI run has.
+const distExists = fs.existsSync(loadConfig().clientDistDir);
+
+test('GET / serves the built client index.html when webapp/client/dist/ exists', { skip: !distExists && 'webapp/client/dist/ not built - run `npm run build` first' }, withServer(async (base) => {
+  const res = await fetch(`${base}/`);
+  assert.equal(res.status, 200);
+  assert.match(res.headers.get('content-type') || '', /text\/html/);
+  const body = await res.text();
+  assert.match(body, /<div id="root">|<script/); // the real Vite-built shell, not a stub
+}));
+
+test('GET /some/deep/client/route falls back to index.html (SPA client-side routing)', { skip: !distExists && 'webapp/client/dist/ not built - run `npm run build` first' }, withServer(async (base) => {
+  const res = await fetch(`${base}/some/deep/client/route`);
+  assert.equal(res.status, 200);
+  assert.match(res.headers.get('content-type') || '', /text\/html/);
+}));
+
+test('an unmatched /api/* path still 404s normally even when dist/ exists - the SPA fallback must not swallow it', { skip: !distExists && 'webapp/client/dist/ not built - run `npm run build` first' }, withServer(async (base) => {
+  const res = await fetch(`${base}/api/totally-nonexistent-endpoint`);
+  assert.equal(res.status, 404);
+}));

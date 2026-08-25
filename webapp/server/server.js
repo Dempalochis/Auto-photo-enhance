@@ -641,6 +641,21 @@ app.post('/api/jobs/:id/retry', asyncHandler(async (req, res) => {
   res.json({ jobId: newJob.id, spaceWarning });
 }));
 
+// Production build (V8 Phase 3): if webapp/client/dist/ exists (created by `npm run build`),
+// serve it directly - lets `npm start` run the whole app on one port with no separate Vite dev
+// server. Guarded by an existence check so dev mode (no dist/ yet, served by `vite`/`npm run dev`
+// instead) is unaffected. The catch-all explicitly falls through (via next(), not a blanket
+// sendFile) for /api/* and /webapp-cache/* so an unmatched API path still 404s normally instead
+// of silently returning the SPA shell - registered after every real route above, so those always
+// win first regardless.
+if (fs.existsSync(cfg.clientDistDir)) {
+  app.use(express.static(cfg.clientDistDir));
+  app.get('*', (req, res, next) => {
+    if (req.path.startsWith('/api/') || req.path.startsWith('/webapp-cache/')) return next();
+    res.sendFile(path.join(cfg.clientDistDir, 'index.html'));
+  });
+}
+
 // Registered after every route: catches errors passed via next(err) that never reach
 // asyncHandler - most notably express.json() rejecting a malformed request body - and returns
 // the same {error} JSON shape every other endpoint uses, instead of Express's default HTML

@@ -24,6 +24,9 @@ function loadConfig() {
     presetsDir: path.join(REPO_ROOT, 'presets'),
     profilesDir: path.join(REPO_ROOT, 'profiles'),
     scriptsDir: path.join(REPO_ROOT, 'scripts'),
+    // Vite's build output (V8 Phase 3) - only exists after `npm run build`; server.js checks
+    // for it before serving from it, so dev mode (no dist/ yet) isn't affected.
+    clientDistDir: path.join(REPO_ROOT, 'webapp', 'client', 'dist'),
     thumbCacheDir: path.join(REPO_ROOT, '.webapp_cache', 'thumbnails'),
     previewCacheDir: path.join(REPO_ROOT, '.webapp_cache', 'previews'),
     stateDir: path.join(REPO_ROOT, '.webapp_cache'),

@@ -6,6 +6,8 @@
   "scripts": {
     "postinstall": "npm install --prefix webapp/server && npm install --prefix webapp/client",
     "dev": "concurrently -n server,client -c blue,green \"npm run start --prefix webapp/server\" \"npm run dev --prefix webapp/client\"",
+    "build": "npm run build --prefix webapp/client",
+    "start": "node webapp/server/server.js",
     "test": "npm test --prefix webapp/server && npm test --prefix webapp/client"
   },
   "devDependencies": {
