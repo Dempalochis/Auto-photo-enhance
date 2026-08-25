@@ -1,0 +1,14 @@
+{
+  "name": "auto-photo-enhance",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Root launcher for the Auto-photo-enhance web UI - runs webapp/server and webapp/client together. The CLI pipeline (auto_enhance_arw_to_jpg.bat, scripts/*.ps1) has no Node dependency and isn't affected by this file.",
+  "scripts": {
+    "postinstall": "npm install --prefix webapp/server && npm install --prefix webapp/client",
+    "dev": "concurrently -n server,client -c blue,green \"npm run start --prefix webapp/server\" \"npm run dev --prefix webapp/client\"",
+    "test": "npm test --prefix webapp/server && npm test --prefix webapp/client"
+  },
+  "devDependencies": {
+    "concurrently": "^10.0.5"
+  }
+}
