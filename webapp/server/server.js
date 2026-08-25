@@ -3,6 +3,7 @@ const path = require('path');
 const express = require('express');
 
 const { loadConfig } = require('./config');
+const { RAW_FILE_PATTERN } = require('./rawFormats');
 const {
   enqueue, getJob, listJobs, listExecutionOrder, listLaneTypes, listQueuedIds, reorderQueue,
   cancelJob, pauseJob, requeueJob, initJobStore,
@@ -101,15 +102,15 @@ function resolvePhotoPath(relPath) {
   return resolvePhotoPathPure(activePhotosDir, relPath);
 }
 
-function walkArwFiles(dir, baseDir) {
+function walkRawFiles(dir, baseDir) {
   const results = [];
   const entries = fs.readdirSync(dir, { withFileTypes: true });
   for (const entry of entries) {
     const full = path.join(dir, entry.name);
     if (entry.isDirectory()) {
       if (entry.name === 'failed' || entry.name === '_logs') continue;
-      results.push(...walkArwFiles(full, baseDir));
-    } else if (entry.isFile() && /\.arw$/i.test(entry.name)) {
+      results.push(...walkRawFiles(full, baseDir));
+    } else if (entry.isFile() && RAW_FILE_PATTERN.test(entry.name)) {
       const relDir = path.relative(baseDir, dir).split(path.sep).join('/');
       const relPath = relDir ? `${relDir}/${entry.name}` : entry.name;
       results.push({ relPath, name: entry.name, dir: relDir });
@@ -124,9 +125,9 @@ function walkArwFiles(dir, baseDir) {
 async function listPhotos() {
   const walkStart = Date.now();
   const found = cfg.scanSubfolders
-    ? walkArwFiles(activePhotosDir, activePhotosDir)
+    ? walkRawFiles(activePhotosDir, activePhotosDir)
     : fs.readdirSync(activePhotosDir, { withFileTypes: true })
-      .filter((d) => d.isFile() && /\.arw$/i.test(d.name))
+      .filter((d) => d.isFile() && RAW_FILE_PATTERN.test(d.name))
       .map((d) => ({ relPath: d.name, name: d.name, dir: '' }));
 
   const entries = found.map((f) => {

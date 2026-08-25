@@ -1,5 +1,11 @@
 *.ARW
 *.arw
+*.NEF
+*.nef
+*.DNG
+*.dng
+*.RAF
+*.raf
 edited_jpg/
 logs/
 incoming/
@@ -28,6 +34,7 @@ design_style_blueprint.md
 /V6_PLAN.md
 /V7_PLAN.md
 /V8_PLAN.md
+/V9_PLAN.md
 /docs/*
 !/docs/gpu_spike_findings.md
 /_development/

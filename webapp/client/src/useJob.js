@@ -28,7 +28,19 @@ export function useJob(jobId) {
           timerRef.current = setTimeout(poll, 800);
         }
       } catch (err) {
-        if (!cancelled) setJob({ status: 'error', error: err.message });
+        if (cancelled) return;
+        // Keep retrying rather than giving up permanently - a failed request here doesn't mean
+        // the job itself failed (e.g. a transient network blip, or hitting the server during its
+        // brief startup window before it's fully listening). Reproduced live during V8
+        // acceptance verification: an early 502 during server cold-start killed this poll loop
+        // for good, so a preview job that went on to finish successfully server-side never got
+        // its thumbnails to appear client-side - it looked permanently stuck until a full page
+        // refresh restarted polling from scratch. Matches HealthIndicator.jsx's and
+        // JobQueuePanel.jsx's own always-reschedule-via-`finally` pattern, which useJob.js was
+        // the only poll loop in the codebase *not* following - the UI now self-heals once the
+        // transient issue clears, instead of requiring the user to know to refresh.
+        setJob({ status: 'error', error: err.message });
+        timerRef.current = setTimeout(poll, 800);
       }
     };
 

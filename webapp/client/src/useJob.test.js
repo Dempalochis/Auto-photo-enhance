@@ -39,4 +39,27 @@ describe('useJob', () => {
     resolveSecond({ id: 'job-2', status: 'done', progress: { items: [] } });
     await waitFor(() => expect(result.current?.id).toBe('job-2'));
   });
+
+  // Regression test for a real bug reproduced during V8 acceptance verification on an actual
+  // machine: an early transient failure (a 502 during the server's brief cold-start window)
+  // permanently killed this poll loop, so a preview job that went on to finish successfully
+  // server-side never got its thumbnails to appear client-side - stuck until a full page
+  // refresh. The fix always reschedules the next poll, matching HealthIndicator.jsx's and
+  // JobQueuePanel.jsx's own pattern, instead of only rescheduling inside the try block.
+  test('a transient poll failure keeps retrying instead of permanently stopping', async () => {
+    api.getJob
+      .mockRejectedValueOnce(new Error('502 Bad Gateway'))
+      .mockResolvedValue({ id: 'job-1', status: 'done', progress: { items: [{ label: 'a', status: 'done' }] } });
+
+    const { result } = renderHook(() => useJob('job-1'));
+
+    // First poll fails - surfaces as a (transient) error state, not silence.
+    await waitFor(() => expect(result.current?.status).toBe('error'));
+
+    // The retry (scheduled 800ms after the failure) succeeds and overwrites the error state with
+    // the job's real status - this is the actual bug: before the fix, no retry was ever
+    // scheduled here, so this would time out with result.current stuck at status 'error' forever.
+    await waitFor(() => expect(result.current?.status).toBe('done'), { timeout: 2000 });
+    expect(result.current.progress.items).toEqual([{ label: 'a', status: 'done' }]);
+  });
 });

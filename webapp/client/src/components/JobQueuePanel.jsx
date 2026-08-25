@@ -287,7 +287,19 @@ export default function JobQueuePanel({ historyLimit = 8 }) {
 
   const handleToggleNotify = async () => {
     if (!notifyEnabled && notificationsSupported && Notification.permission === 'default') {
-      await Notification.requestPermission();
+      // requestPermission() can reject (not just resolve "denied") on some browser/OS setups -
+      // e.g. notifications locked out entirely by a managed-browser policy. Without this catch,
+      // an unhandled rejection here aborts the whole handler and the toggle silently never
+      // flips - reproduced on a real machine (V8 acceptance verification). The button's own
+      // state is "does the user want notifications", independent of whether the browser actually
+      // grants them; the real notification-firing code elsewhere already checks
+      // `Notification.permission === 'granted'` before firing, so decoupling the toggle from a
+      // possibly-throwing permission call loses nothing.
+      try {
+        await Notification.requestPermission();
+      } catch {
+        // Permission blocked/unavailable - fall through and still flip the toggle below.
+      }
     }
     setNotifyEnabled((v) => !v);
   };

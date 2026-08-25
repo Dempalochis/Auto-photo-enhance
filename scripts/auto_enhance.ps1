@@ -1,8 +1,9 @@
 <#
   Hardened, idempotent wrapper around rawtherapee-cli.
-  Converts *.arw files in -InputDir to JPEG using a RawTherapee pp3 profile (color correction),
-  optionally with a second pp3 "look" preset stacked on top, logging one row per file and
-  exiting non-zero if anything failed.
+  Converts raw photos (.arw/.nef/.dng/.raf - see lib_common.ps1's $SupportedRawExtensions) in
+  -InputDir to JPEG using a RawTherapee pp3 profile (color correction), optionally with a second
+  pp3 "look" preset stacked on top, logging one row per file and exiting non-zero if anything
+  failed.
 
   Settings resolve in this order (highest wins): explicit -Param > config/config.json > built-in default.
 
@@ -95,10 +96,13 @@ if ($FilesJson) {
         $arwFiles += Get-Item -LiteralPath $f
     }
 } else {
-    $arwFiles = @(Get-ChildItem -LiteralPath $InputDir -Filter "*.arw" -File -Recurse:$ScanSubfolders)
+    # $arwFiles keeps its name for now (pre-V9 naming; renaming every use below is a larger,
+    # purely-cosmetic follow-up not worth the risk right before real multi-format testing) - it
+    # holds any supported raw format, not just .arw, via Test-IsRawFile below.
+    $arwFiles = @(Get-ChildItem -LiteralPath $InputDir -File -Recurse:$ScanSubfolders | Where-Object { Test-IsRawFile $_ })
 }
 if ($arwFiles.Count -eq 0) {
-    Write-Host "No .arw files found in $InputDir"
+    Write-Host "No raw photos found in $InputDir (looked for: $($SupportedRawExtensions -join ', '))"
 }
 
 # Root used to compute each file's relative subfolder, so a recursive scan's output mirrors

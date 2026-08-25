@@ -122,6 +122,48 @@ test('POST /api/source-folder returns the full photo list, not just a count - so
   assert.deepEqual(body.photos.map((p) => p.relPath).sort(), viaGet.photos.map((p) => p.relPath).sort());
 }));
 
+// V9: multi-format raw support. A fresh temp dir with fake files (empty content - listPhotos
+// only needs the filename/extension and fs.stat, never reads raw pixel data) instead of relying
+// on this dev machine happening to have real .NEF/.DNG/.RAF samples, which it doesn't. Restores
+// the original source folder *and* the real .webapp_cache/state.json byte-for-byte afterward
+// (not just re-POSTing the original active path, which would still leave the temp dir's path
+// recorded in the real photosDirHistory - caught live: an earlier version of this test did
+// exactly that and leaked a temp path into this dev machine's real recent-folders list).
+test('GET /api/photos lists every V9-supported raw format, not just .arw, and excludes non-raw files', withServer(async (base) => {
+  const stateFile = path.join(loadConfig().stateDir, 'state.json');
+  const originalStateRaw = fs.existsSync(stateFile) ? fs.readFileSync(stateFile, 'utf8') : null;
+  const original = await (await fetch(`${base}/api/source-folder`)).json();
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ape-multiformat-test-'));
+  try {
+    const names = ['a.ARW', 'b.NEF', 'c.dng', 'd.RAF', 'e.jpg', 'notes.txt'];
+    for (const name of names) fs.writeFileSync(path.join(tmpDir, name), 'fake raw bytes');
+
+    const setRes = await fetch(`${base}/api/source-folder`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ path: tmpDir }),
+    });
+    assert.equal(setRes.status, 200);
+    const body = await setRes.json();
+    assert.deepEqual(
+      body.photos.map((p) => p.name).sort(),
+      ['a.ARW', 'b.NEF', 'c.dng', 'd.RAF'],
+      'exactly the four raw files, case-insensitively, none of the non-raw ones',
+    );
+  } finally {
+    await fetch(`${base}/api/source-folder`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ path: original.path }),
+    });
+    // Undo the history-list side effect of the restore-POST above too, not just the active path -
+    // otherwise the temp dir (and a redundant duplicate of the original path) both end up
+    // recorded in the real, shared state file.
+    if (originalStateRaw !== null) fs.writeFileSync(stateFile, originalStateRaw);
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+}));
+
 test('POST /api/jobs/reorder validates its body and returns a clean 400 on malformed input', withServer(async (base) => {
   const missingType = await fetch(`${base}/api/jobs/reorder`, {
     method: 'POST',

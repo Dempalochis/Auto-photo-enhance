@@ -1,7 +1,22 @@
 <#
-  Shared helpers dot-sourced by auto_enhance.ps1 and preview_presets.ps1:
-  config loading and per-file base-profile (color-correction) resolution.
+  Shared helpers dot-sourced by auto_enhance.ps1, preview_presets.ps1, and watch_folder.ps1:
+  config loading, per-file base-profile (color-correction) resolution, and the supported raw
+  file extensions.
 #>
+
+# Single source of truth for which raw file extensions this app accepts - mirrors
+# webapp/server/rawFormats.js (the two can't literally share code across JS/PowerShell, but must
+# be kept in sync by hand). V9: expanded beyond the original Sony .ARW-only restriction, which
+# was never a RawTherapee limitation - see V9_PLAN.md (local-only, not shipped) for the full
+# reasoning. Plain extensions (no wildcard/dot) so callers can use them either with
+# Get-ChildItem's -Include (needs a "*." prefix) or a plain .Extension -in comparison
+# ([System.IO.FileInfo].Extension already includes the leading dot, lowercase-normalized below).
+$SupportedRawExtensions = @(".arw", ".nef", ".dng", ".raf")
+
+# True if $File's extension is one of $SupportedRawExtensions (case-insensitive).
+function Test-IsRawFile([System.IO.FileInfo]$File) {
+    return $SupportedRawExtensions -contains $File.Extension.ToLowerInvariant()
+}
 
 function Get-RepoRoot {
     Split-Path -Parent $PSScriptRoot

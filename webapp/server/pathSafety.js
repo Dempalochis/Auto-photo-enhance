@@ -1,4 +1,5 @@
 const path = require('path');
+const { RAW_FILE_PATTERN } = require('./rawFormats');
 
 // A "photo" is identified everywhere by its path relative to the active photos root (POSIX
 // separators, e.g. "Ceremony/DSC00001.ARW", or just "DSC00001.ARW" for top-level files) rather
@@ -9,7 +10,7 @@ const path = require('path');
 function isSafeRelPath(relPath) {
   if (typeof relPath !== 'string' || relPath.length === 0) return false;
   if (path.isAbsolute(relPath)) return false;
-  if (!/\.arw$/i.test(relPath)) return false;
+  if (!RAW_FILE_PATTERN.test(relPath)) return false;
   const segments = relPath.split(/[\\/]/);
   if (segments.some((s) => s === '..' || s === '.' || s === '')) return false;
   return true;
@@ -27,7 +28,7 @@ function resolvePhotoPath(rootDir, relPath) {
 // Flattens a relPath into a single safe path segment for use as a cache key/folder name,
 // e.g. "Ceremony/DSC00001.ARW" -> "Ceremony__DSC00001".
 function cacheKeyFor(relPath) {
-  return relPath.replace(/\.arw$/i, '').split(/[\\/]/).join('__');
+  return relPath.replace(RAW_FILE_PATTERN, '').split(/[\\/]/).join('__');
 }
 
 function sanitizeProjectName(name) {

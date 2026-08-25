@@ -1,8 +1,9 @@
 <#
-  Polls a folder for new .arw files and runs auto_enhance.ps1 once all currently-present
-  files have a stable size (i.e. finished copying), instead of processing on every event.
-  This deliberately waits for the WHOLE batch to be stable before running - a file still
-  being copied in the same folder blocks that cycle so it can never be grabbed half-written.
+  Polls a folder for new raw photos (.arw/.nef/.dng/.raf - see lib_common.ps1's
+  $SupportedRawExtensions) and runs auto_enhance.ps1 once all currently-present files have a
+  stable size (i.e. finished copying), instead of processing on every event. This deliberately
+  waits for the WHOLE batch to be stable before running - a file still being copied in the same
+  folder blocks that cycle so it can never be grabbed half-written.
 #>
 [CmdletBinding()]
 param(
@@ -13,7 +14,8 @@ param(
     [int]$MaxCycles = 0   # 0 = run forever; >0 = stop after N poll cycles (used by tests)
 )
 
-$RepoRoot = Split-Path -Parent $PSScriptRoot
+. (Join-Path $PSScriptRoot "lib_common.ps1")
+$RepoRoot = Get-RepoRoot
 if (-not $WatchDir) { $WatchDir = Join-Path $RepoRoot "incoming" }
 New-Item -ItemType Directory -Force -Path $WatchDir | Out-Null
 
@@ -22,7 +24,7 @@ Write-Host "Watching $WatchDir every ${PollIntervalSec}s (files must be stable f
 $cycle = 0
 while ($true) {
     $cycle++
-    $files = Get-ChildItem -LiteralPath $WatchDir -Filter "*.arw" -File -ErrorAction SilentlyContinue
+    $files = Get-ChildItem -LiteralPath $WatchDir -File -ErrorAction SilentlyContinue | Where-Object { Test-IsRawFile $_ }
 
     if ($files.Count -gt 0) {
         $sizesBefore = @{}
@@ -30,7 +32,7 @@ while ($true) {
 
         Start-Sleep -Seconds $StableSeconds
 
-        $filesAfter = Get-ChildItem -LiteralPath $WatchDir -Filter "*.arw" -File -ErrorAction SilentlyContinue
+        $filesAfter = Get-ChildItem -LiteralPath $WatchDir -File -ErrorAction SilentlyContinue | Where-Object { Test-IsRawFile $_ }
         $allStable = ($filesAfter.Count -eq $files.Count)
         if ($allStable) {
             foreach ($f in $filesAfter) {

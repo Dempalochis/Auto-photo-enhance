@@ -11,11 +11,21 @@ test('isSafeRelPath accepts plain and nested .arw paths', () => {
   assert.equal(isSafeRelPath('Ceremony\\DSC00001.arw'), true);
 });
 
-test('isSafeRelPath rejects path traversal and non-.arw files', () => {
+// V9: multi-format support - the security boundary (not just the listing filter) needs its own
+// coverage per format, since a gap here means an unintended extension could be resolved to a
+// real filesystem path.
+test('isSafeRelPath accepts the other three V9-supported formats too', () => {
+  assert.equal(isSafeRelPath('DSC00001.NEF'), true);
+  assert.equal(isSafeRelPath('DSC00001.dng'), true);
+  assert.equal(isSafeRelPath('Ceremony/DSC00001.RAF'), true);
+});
+
+test('isSafeRelPath rejects path traversal and non-raw files', () => {
   assert.equal(isSafeRelPath('../secrets.txt'), false);
   assert.equal(isSafeRelPath('../../etc/passwd.arw'), false);
   assert.equal(isSafeRelPath('Ceremony/../../../DSC00001.arw'), false);
   assert.equal(isSafeRelPath('DSC00001.jpg'), false);
+  assert.equal(isSafeRelPath('DSC00001.raw'), false); // deliberately unsupported - see V9_PLAN.md
   assert.equal(isSafeRelPath(''), false);
   assert.equal(isSafeRelPath(null), false);
   assert.equal(isSafeRelPath(42), false);
@@ -49,6 +59,12 @@ test('cacheKeyFor flattens subfolders into a single safe segment', () => {
   assert.equal(cacheKeyFor('Ceremony/DSC00001.ARW'), 'Ceremony__DSC00001');
   assert.equal(cacheKeyFor('DSC00001.arw'), 'DSC00001');
   assert.equal(cacheKeyFor('A/B/DSC00001.ARW'), 'A__B__DSC00001');
+});
+
+test('cacheKeyFor strips any of the V9-supported extensions, not just .arw', () => {
+  assert.equal(cacheKeyFor('DSC00001.NEF'), 'DSC00001');
+  assert.equal(cacheKeyFor('Ceremony/DSC00001.dng'), 'Ceremony__DSC00001');
+  assert.equal(cacheKeyFor('DSC00001.RAF'), 'DSC00001');
 });
 
 test('sanitizeProjectName strips filesystem-unsafe characters and falls back on empty', () => {

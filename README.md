@@ -1,6 +1,8 @@
 # Auto-photo-enhance
 
-Automated batch enhancement of Sony `.ARW` raw photos to `.jpg`, using [RawTherapee](https://rawtherapee.com/)'s command-line renderer (`rawtherapee-cli`). Two ways to use it: the [web UI](#web-ui) (recommended — `setup.bat`/`start.bat`, no terminal needed) for browsing/filtering photos by date, comparing all 32 presets on a photo before committing, and running named/dated project batches; or a plain one-click `.bat` for a no-frills CLI batch conversion.
+Automated batch enhancement of raw photos (`.ARW`/`.NEF`/`.DNG`/`.RAF`) to `.jpg`, using [RawTherapee](https://rawtherapee.com/)'s command-line renderer (`rawtherapee-cli`). Two ways to use it: the [web UI](#web-ui) (recommended — `setup.bat`/`start.bat`, no terminal needed) for browsing/filtering photos by date, comparing all 32 presets on a photo before committing, and running named/dated project batches; or a plain one-click `.bat` for a no-frills CLI batch conversion.
+
+**Format support note**: this project was originally built and tuned around Sony `.ARW` output specifically - `.NEF`/`.DNG`/`.RAF` support (added after V8) means the pipeline *accepts and processes* those formats the same way, but `profiles/default.pp3`/`profiles/lowlight.pp3` and the 32 look presets were only visually verified against Sony sensor output. Different cameras' color science can look different through the same profile - preview before trusting a look for a shoot (see "Choosing a preset for a shoot" in the Presets section below), same advice already given there for scene type.
 
 ## Just want to use it?
 
@@ -26,7 +28,7 @@ Prefer to run it from source for development, or just want the plain CLI batch c
 
 ## Quick start (CLI)
 
-Double-click [`auto_enhance_arw_to_jpg.bat`](auto_enhance_arw_to_jpg.bat). It converts every `.arw` file in the repo root into `edited_jpg/`, using the settings in `config/config.json` (see "Config" below — copy it from the tracked [`config/config.example.json`](config/config.example.json) template first if you haven't run `setup.bat`).
+Double-click [`auto_enhance_arw_to_jpg.bat`](auto_enhance_arw_to_jpg.bat). It converts every supported raw photo (`.arw`/`.nef`/`.dng`/`.raf`) in the repo root into `edited_jpg/`, using the settings in `config/config.json` (see "Config" below — copy it from the tracked [`config/config.example.json`](config/config.example.json) template first if you haven't run `setup.bat`).
 
 ## Layout
 
@@ -40,7 +42,8 @@ profiles/*.pp3          RawTherapee color-correction profiles (named, selectable
 presets/*.pp3           RawTherapee "look" presets, stacked on top of a profile (see Presets below)
 scripts/setup.ps1       first-run setup logic (setup.bat wraps this)
 scripts/lib_common.ps1  shared config-loading / base-profile-resolution / prerequisite-discovery logic
-scripts/auto_enhance.ps1   main pipeline: converts *.arw -> *.jpg, logs, handles failures
+scripts/auto_enhance.ps1   main pipeline: converts raw photos -> *.jpg, logs, handles failures
+webapp/server/rawFormats.js  single source of truth for supported raw extensions (.arw/.nef/.dng/.raf)
 scripts/watch_folder.ps1   optional watch-folder wrapper around auto_enhance.ps1
 scripts/preview_presets.ps1   renders one example photo through every preset for comparison
 scripts/tests/          Pester tests for the PowerShell pipeline - see Testing below
@@ -57,7 +60,7 @@ docs/gpu_spike_findings.md   GPU-acceleration research spike: findings, real tim
 
 ## How it works
 
-1. `auto_enhance.ps1` scans an input directory for `*.arw` files and, for each one not already converted, calls `rawtherapee-cli -p <profile> -o <out>.jpg -j<quality> -Y -c <file>`.
+1. `auto_enhance.ps1` scans an input directory for supported raw photos (`.arw`/`.nef`/`.dng`/`.raf` - see `scripts/lib_common.ps1`'s `$SupportedRawExtensions`) and, for each one not already converted, calls `rawtherapee-cli -p <profile> -o <out>.jpg -j<quality> -Y -c <file>`.
 2. **Idempotent**: if the output file already exists, the file is skipped. Safe to re-run or schedule repeatedly. Output naming: `edited_jpg/<name>.jpg` when no preset is selected (unchanged from before presets existed), or `edited_jpg/<name>_<preset>.jpg` when one is — so re-running the same photo with a different preset produces a separate file instead of overwriting the previous look.
 3. **Per-photo profile selection**: if `autoProfile.enabled` is `true` in the config and `exiftoolPath` points at a working [ExifTool](https://exiftool.org/) install, each file's ISO is read and used to pick between `lowIsoProfile` and `highIsoProfile` (threshold: `isoThreshold`). Pass `-Profile <name>` or `-ProfilePath <file.pp3>` explicitly to bypass this and force one profile for the whole run.
 4. **Failure handling**: a failed file (bad exit code, or RawTherapee silently printing its help text instead of processing) is retried on the next run. After `quarantineAfterFailures` (default 2) consecutive failures, the file is moved to `<input dir>/failed/` so it stops being retried forever.
@@ -158,7 +161,7 @@ A browser-based front end over the same pipeline above — nothing in it reimple
 ### Key features
 
 - **Source folder browsing** — a drive navigator (internal/external/USB, same names Windows Explorer shows) plus a "last 5 folders" recent list, remembered across server restarts.
-- **Photo library filtering** — every `.arw` in the source folder, grouped by month/day from real EXIF capture date, with filename search, from/to date range, and compact/comfortable + newest/oldest sorting.
+- **Photo library filtering** — every supported raw photo (`.arw`/`.nef`/`.dng`/`.raf`) in the source folder, grouped by month/day from real EXIF capture date, with filename search, from/to date range, and compact/comfortable + newest/oldest sorting.
 - **Always-visible preset grid** — all 32 categorized looks selectable before you've previewed anything; **Preview** renders real thumbnails for all of them at once (disk-cached, so a repeat preview of the same photo is instant).
 - **Job queue** — Active / Up next (drag-to-reorder, pause/re-queue) / Queued previews / History, each with live progress and an ETA derived from recent same-kind jobs.
 - **Retry** a finished `run` job that didn't succeed (error/cancelled/interrupted) — queues a fresh job with the same photos, preset, and output folder. This is a different mechanism from file-level **quarantine** (see [How it works](#how-it-works)): retry re-queues a whole *job* from the UI; quarantine is `auto_enhance.ps1` pulling one *file* out of future runs after repeated failures.
@@ -211,7 +214,7 @@ npm start
 
 **Source folder** — shows the folder currently being scanned for photos (defaults to `photosDir` from the config, or wherever you last pointed it — this choice persists across server restarts). Paste an absolute path and click **Use this folder**, or click **Browse…** for a lightweight folder navigator, since a browser can't hand a real filesystem path to the page from any native picker. The navigator lists every attached drive with its real name (e.g. "LaCie (F:)", same as Windows Explorer) — internal, external/USB, whatever's plugged in — with a **Drives** shortcut always available to jump back to that list from anywhere. A **Recent** row lists your last 5 source folders (most recent first) for one-click switching back. Switching folders clears your current photo selection and any open preview (they'd point at photos that may no longer be relevant).
 
-**1. Choose photos to process** — every `.arw` found in the source folder above (recursively, by default), auto-grouped by month then day using the photo's real EXIF capture date (not file-copy time), newest-first by default.
+**1. Choose photos to process** — every supported raw photo (`.arw`/`.nef`/`.dng`/`.raf`) found in the source folder above (recursively, by default), auto-grouped by month then day using the photo's real EXIF capture date (not file-copy time), newest-first by default.
 - Click a photo's checkbox to include it in the batch; **Select day** / **Select month** toggle the whole group at once; **Select all** / **Clear selection** work across whatever's currently visible.
 - **Search filename**, and **From/To date** (day-level only, ignores time-of-day) narrow the grid down.
 - **Compact/Comfortable** toggles thumbnail size; sort **Newest/Oldest first** flips the order. Both, plus your last project name and preset choice, are remembered in the browser between sessions.
@@ -244,14 +247,14 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\watch_folder.ps1 -Wa
 
 (`-ExecutionPolicy Bypass` is required per-invocation because Windows blocks unsigned local scripts by default — the same reason `auto_enhance_arw_to_jpg.bat` calls PowerShell that way internally. It only affects this one process, not your system-wide policy.)
 
-Polls `-WatchDir` every `PollIntervalSec` seconds. Before processing, it checks that every `.arw` currently in the folder has had an unchanged file size for `StableSeconds` — if anything is still being copied in, the whole cycle is skipped rather than risking a half-written file. Once stable, it invokes `auto_enhance.ps1` over the whole folder (idempotency means already-converted files are skipped automatically). Run it under Task Scheduler for hands-off operation, or as a long-running console session.
+Polls `-WatchDir` every `PollIntervalSec` seconds. Before processing, it checks that every supported raw photo currently in the folder has had an unchanged file size for `StableSeconds` — if anything is still being copied in, the whole cycle is skipped rather than risking a half-written file. Once stable, it invokes `auto_enhance.ps1` over the whole folder (idempotency means already-converted files are skipped automatically). Run it under Task Scheduler for hands-off operation, or as a long-running console session.
 
 ## Known RawTherapee CLI gotchas
 
 - `-c <input>` **must be the last argument** — anything after it is treated as another input file/folder.
 - `-w` (suppress console window) is **not supported** by this build's `rawtherapee-cli.exe` — passing it makes RawTherapee silently print its help text instead of processing anything, with a non-informative failure. `auto_enhance.ps1` guards against this class of problem by treating a `Usage:` string in stdout as a hard failure, not a success.
 - Windows file matching is case-insensitive — a glob list like `*.arw *.ARW` matches the same files twice; use a single pattern.
-- `System.Drawing`/GDI+ cannot read `.ARW` metadata directly (throws a generic "Out of memory" on `Image.FromFile`) — ISO/EXIF reads go through ExifTool instead.
+- `System.Drawing`/GDI+ cannot read raw-photo metadata directly for any of the supported formats (throws a generic "Out of memory" on `Image.FromFile`) — ISO/EXIF reads go through ExifTool instead.
 - `-f` (fast-export: bypasses sharpening/denoise/defringe/wavelet, forces the fastest demosaic, and is supposed to downsize) was measured and **not worth using** — its resize step didn't apply here (matches a known upstream bug), so it gave no real speedup while still degrading quality. `-q` (quick-start) is used instead: a small (~3-5%), zero-quality-cost win from skipping cache loading.
 
 ## Testing
@@ -277,7 +280,7 @@ Invoke-Pester scripts/tests/
 ```
 `Import-Module ... -Force` first is needed because of the old inbox copy above - without it, PowerShell may resolve `Invoke-Pester` to Pester 3.4 instead of the one just installed. As of this writing: 13 tests, all green (7 covering `auto_enhance.ps1`'s pipeline behavior, 6 covering `setup.ps1`'s ExifTool auto-discovery). `preview_presets.ps1`'s own RawTherapee invocation isn't covered yet - it uses a deliberately different `Start-Process`-based pattern (to run several preview renders concurrently) rather than `auto_enhance.ps1`'s synchronous call, which the current wrapper-function setup doesn't reach.
 
-**Manual/pipeline verification** — each capability below was verified against real sample `.ARW` files during development:
+**Manual/pipeline verification** — each capability below was verified against real sample `.ARW` files during development (pre-multi-format-support; `.NEF`/`.DNG`/`.RAF` acceptance is covered by the automated test suite, but this specific manual verification list hasn't been independently re-run per format):
 - Fresh run converts all input files; re-run skips everything (idempotency).
 - Missing RawTherapee executable / missing profile fails fast with a clear message.
 - A rejected CLI flag is caught (both via exit code and the `Usage:` banner check) instead of silently "succeeding".

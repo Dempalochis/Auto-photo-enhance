@@ -67,8 +67,8 @@ if (-not $OutputDir) { $OutputDir = Join-Path $RepoRoot "preview" }
 if (-not (Test-Path -LiteralPath $RTPath)) { Fail "RawTherapee CLI not found: $RTPath" }
 
 if (-not $SourceFile) {
-    $first = Get-ChildItem -LiteralPath $RepoRoot -Filter "*.arw" -File | Select-Object -First 1
-    if (-not $first) { Fail "No .arw file found to preview. Pass -SourceFile <path>." }
+    $first = Get-ChildItem -LiteralPath $RepoRoot -File | Where-Object { Test-IsRawFile $_ } | Select-Object -First 1
+    if (-not $first) { Fail "No raw photo found to preview (looked for: $($SupportedRawExtensions -join ', ')). Pass -SourceFile <path>." }
     $SourceFile = $first.FullName
 }
 if (-not (Test-Path -LiteralPath $SourceFile)) { Fail "Source file not found: $SourceFile" }
