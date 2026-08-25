@@ -1,0 +1,16 @@
+{
+  "rtPath": "C:\\Program Files\\RawTherapee\\5.9\\rawtherapee-cli.exe",
+  "outputDir": "edited_jpg",
+  "logDir": "logs",
+  "quality": 95,
+  "defaultProfile": "default",
+  "exiftoolPath": "C:\\Program Files\\ExifTool\\exiftool.exe",
+  "autoProfile": {
+    "enabled": true,
+    "isoThreshold": 800,
+    "lowIsoProfile": "default",
+    "highIsoProfile": "lowlight"
+  },
+  "quarantineAfterFailures": 2,
+  "preset": null
+}
