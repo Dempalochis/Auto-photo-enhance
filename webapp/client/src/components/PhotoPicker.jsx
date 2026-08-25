@@ -1,6 +1,9 @@
-import { useEffect, useMemo, useState } from 'react';
+import {
+  useEffect, useLayoutEffect, useMemo, useRef, useState,
+} from 'react';
 import * as Checkbox from '@radix-ui/react-checkbox';
 import { CheckIcon } from '@radix-ui/react-icons';
+import { useWindowVirtualizer } from '@tanstack/react-virtual';
 import { filterPhotos, groupByDate } from '../dateUtils';
 import { thumbnailUrl } from '../api';
 import Hint from './Hint';
@@ -68,36 +71,103 @@ function PhotoCard({ photo, isChecked, isPreviewing, previewStarting, onToggle, 
   );
 }
 
-function DayGroup({ day, selected, onToggle, onPreview, previewPhoto, previewStarting, onSelectMany, thumbSize }) {
-  const ids = day.photos.map((p) => p.relPath);
-  const allSelected = ids.every((id) => selected.has(id));
-
+function MonthHeader({ month, selected, onSelectMany }) {
+  const monthIds = useMemo(() => month.days.flatMap((d) => d.photos.map((p) => p.relPath)), [month]);
+  const monthAllSelected = monthIds.every((id) => selected.has(id));
   return (
-    <div className="mb-4">
-      <div className="flex items-center justify-between mb-2 pl-3 border-l-2 border-[var(--border)]">
-        <span className="eyebrow">{day.label} · {day.photos.length}</span>
-        <Hint text={`${allSelected ? 'Removes' : 'Adds'} all ${day.photos.length} photo${day.photos.length === 1 ? '' : 's'} from this day ${allSelected ? 'from' : 'to'} your selection.`}>
-          <button type="button" className="btn-secondary text-[10px] py-0.5 px-2" onClick={() => onSelectMany(ids, !allSelected)}>
-            {allSelected ? 'Deselect day' : 'Select day'}
-          </button>
-        </Hint>
-      </div>
-      <div className={`grid gap-3 ${thumbSize === 'compact' ? 'grid-cols-3 sm:grid-cols-4 md:grid-cols-6' : 'grid-cols-2 sm:grid-cols-3 md:grid-cols-4'}`}>
-        {day.photos.map((photo) => (
-          <PhotoCard
-            key={photo.relPath}
-            photo={photo}
-            isChecked={selected.has(photo.relPath)}
-            isPreviewing={previewPhoto === photo.relPath}
-            previewStarting={previewStarting}
-            onToggle={onToggle}
-            onPreview={onPreview}
-            thumbSize={thumbSize}
-          />
-        ))}
-      </div>
+    <div className="flex items-center justify-between mb-3">
+      <h3 className="text-xs font-semibold tracking-wide">{month.label}</h3>
+      <Hint text={`${monthAllSelected ? 'Removes' : 'Adds'} all ${monthIds.length} photos from this month ${monthAllSelected ? 'from' : 'to'} your selection.`}>
+        <button type="button" className="btn-secondary text-[10px] py-0.5 px-2" onClick={() => onSelectMany(monthIds, !monthAllSelected)}>
+          {monthAllSelected ? 'Deselect month' : 'Select month'}
+        </button>
+      </Hint>
     </div>
   );
+}
+
+function DayHeader({ day, selected, onSelectMany }) {
+  const ids = useMemo(() => day.photos.map((p) => p.relPath), [day]);
+  const allSelected = ids.every((id) => selected.has(id));
+  return (
+    <div className="flex items-center justify-between mb-2 pl-3 border-l-2 border-[var(--border)]">
+      <span className="eyebrow">{day.label} · {day.photos.length}</span>
+      <Hint text={`${allSelected ? 'Removes' : 'Adds'} all ${day.photos.length} photo${day.photos.length === 1 ? '' : 's'} from this day ${allSelected ? 'from' : 'to'} your selection.`}>
+        <button type="button" className="btn-secondary text-[10px] py-0.5 px-2" onClick={() => onSelectMany(ids, !allSelected)}>
+          {allSelected ? 'Deselect day' : 'Select day'}
+        </button>
+      </Hint>
+    </div>
+  );
+}
+
+// One virtualized "row" - up to `columns` photos, laid out with the same grid classes the
+// unvirtualized version used. A CSS grid still handles the actual column layout; this row is
+// just one grid-worth of photos at a time, chunked in JS so the virtualizer can measure/skip
+// whole rows instead of individual cards.
+function PhotoRow({ photos, selected, onToggle, onPreview, previewPhoto, previewStarting, thumbSize }) {
+  return (
+    <div className={`grid gap-3 ${thumbSize === 'compact' ? 'grid-cols-3 sm:grid-cols-4 md:grid-cols-6' : 'grid-cols-2 sm:grid-cols-3 md:grid-cols-4'}`}>
+      {photos.map((photo) => (
+        <PhotoCard
+          key={photo.relPath}
+          photo={photo}
+          isChecked={selected.has(photo.relPath)}
+          isPreviewing={previewPhoto === photo.relPath}
+          previewStarting={previewStarting}
+          onToggle={onToggle}
+          onPreview={onPreview}
+          thumbSize={thumbSize}
+        />
+      ))}
+    </div>
+  );
+}
+
+// Mirrors the grid-cols-* breakpoints the CSS used before virtualization (Tailwind's sm=640px/
+// md=768px are viewport-width breakpoints, not container queries, so this JS port is exactly
+// equivalent behavior, not an approximation) - the virtualizer needs to know how many photos
+// fit per row in JS, since it chunks photos into rows itself instead of letting CSS wrap them.
+function useColumnCount(thumbSize) {
+  const [width, setWidth] = useState(() => (typeof window === 'undefined' ? 1280 : window.innerWidth));
+  useEffect(() => {
+    const onResize = () => setWidth(window.innerWidth);
+    window.addEventListener('resize', onResize);
+    return () => window.removeEventListener('resize', onResize);
+  }, []);
+  if (thumbSize === 'compact') {
+    if (width >= 768) return 6;
+    if (width >= 640) return 4;
+    return 3;
+  }
+  if (width >= 768) return 4;
+  if (width >= 640) return 3;
+  return 2;
+}
+
+// Flattens months -> days -> photos into a single list of virtualizable rows (month header / day
+// header / one grid-row of up to `columns` photos) - this is what actually fixes the V8 Phase 1
+// scale finding (3s UI freeze at 3000 photos, from every photo mounting as a real unmemoized DOM
+// node with zero windowing). Window-scroll virtualization (not a fixed-height inner panel) was
+// chosen specifically so the page keeps scrolling naturally - PhotoPicker sits inline in a normal
+// scrolling document (App.jsx's `min-h-screen` layout, not a full-screen dedicated tool), so a
+// react-window-style fixed-viewport panel would have been a real UX regression (double
+// scrollbars) rather than just a perf fix. Selection state itself was already O(1) (a Set) - the
+// cost was purely DOM node count, which this addresses directly.
+function useVirtualRows(months, columns) {
+  return useMemo(() => {
+    const rows = [];
+    for (const month of months) {
+      rows.push({ type: 'month', key: `month-${month.key}`, month });
+      for (const day of month.days) {
+        rows.push({ type: 'day', key: `day-${day.key}`, day });
+        for (let i = 0; i < day.photos.length; i += columns) {
+          rows.push({ type: 'photos', key: `${day.key}-row-${i}`, photos: day.photos.slice(i, i + columns) });
+        }
+      }
+    }
+    return rows;
+  }, [months, columns]);
 }
 
 const THUMB_SIZE_KEY = 'ape.thumbSize';
@@ -116,6 +186,24 @@ export default function PhotoPicker({
   const filtered = useMemo(() => filterPhotos(photos, { search, minDate, maxDate }), [photos, search, minDate, maxDate]);
   const months = useMemo(() => groupByDate(filtered, sortOrder), [filtered, sortOrder]);
   const allVisibleSelected = filtered.length > 0 && filtered.every((p) => selected.has(p.relPath));
+
+  const columns = useColumnCount(thumbSize);
+  const rows = useVirtualRows(months, columns);
+
+  const listRef = useRef(null);
+  const listOffsetRef = useRef(0);
+  useLayoutEffect(() => {
+    listOffsetRef.current = listRef.current?.offsetTop ?? 0;
+  });
+
+  const rowHeight = thumbSize === 'compact' ? 150 : 250; // estimate only - measureElement corrects per-row
+  const virtualizer = useWindowVirtualizer({
+    count: rows.length,
+    estimateSize: (i) => (rows[i].type === 'photos' ? rowHeight : 40),
+    overscan: 6,
+    scrollMargin: listOffsetRef.current,
+    getItemKey: (i) => rows[i].key,
+  });
 
   return (
     <div>
@@ -198,35 +286,40 @@ export default function PhotoPicker({
       ) : filtered.length === 0 ? (
         <p className="text-sm text-[var(--text-dim)]">No photos match the current filters.</p>
       ) : (
-        months.map((month) => {
-          const monthIds = month.days.flatMap((d) => d.photos.map((p) => p.relPath));
-          const monthAllSelected = monthIds.every((id) => selected.has(id));
-          return (
-            <div key={month.key} className="mb-6">
-              <div className="flex items-center justify-between mb-3">
-                <h3 className="text-xs font-semibold tracking-wide">{month.label}</h3>
-                <Hint text={`${monthAllSelected ? 'Removes' : 'Adds'} all ${monthIds.length} photos from this month ${monthAllSelected ? 'from' : 'to'} your selection.`}>
-                  <button type="button" className="btn-secondary text-[10px] py-0.5 px-2" onClick={() => onSelectMany(monthIds, !monthAllSelected)}>
-                    {monthAllSelected ? 'Deselect month' : 'Select month'}
-                  </button>
-                </Hint>
+        <div ref={listRef} style={{ position: 'relative', width: '100%', height: virtualizer.getTotalSize() }}>
+          {virtualizer.getVirtualItems().map((virtualRow) => {
+            const row = rows[virtualRow.index];
+            return (
+              <div
+                key={virtualRow.key}
+                ref={virtualizer.measureElement}
+                data-index={virtualRow.index}
+                style={{
+                  position: 'absolute',
+                  top: 0,
+                  left: 0,
+                  width: '100%',
+                  transform: `translateY(${virtualRow.start - virtualizer.options.scrollMargin}px)`,
+                  paddingBottom: row.type === 'photos' ? '0.75rem' : undefined,
+                }}
+              >
+                {row.type === 'month' && <MonthHeader month={row.month} selected={selected} onSelectMany={onSelectMany} />}
+                {row.type === 'day' && <DayHeader day={row.day} selected={selected} onSelectMany={onSelectMany} />}
+                {row.type === 'photos' && (
+                  <PhotoRow
+                    photos={row.photos}
+                    selected={selected}
+                    onToggle={onToggle}
+                    onPreview={onPreview}
+                    previewPhoto={previewPhoto}
+                    previewStarting={previewStarting}
+                    thumbSize={thumbSize}
+                  />
+                )}
               </div>
-              {month.days.map((day) => (
-                <DayGroup
-                  key={day.key}
-                  day={day}
-                  selected={selected}
-                  onToggle={onToggle}
-                  onPreview={onPreview}
-                  previewPhoto={previewPhoto}
-                  previewStarting={previewStarting}
-                  onSelectMany={onSelectMany}
-                  thumbSize={thumbSize}
-                />
-              ))}
-            </div>
-          );
-        })
+            );
+          })}
+        </div>
       )}
     </div>
   );

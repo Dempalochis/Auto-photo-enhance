@@ -38,12 +38,16 @@ const STATUS_CLASS = {
   interrupted: 'text-[var(--danger)]',
 };
 
-// Mirrors jobRetry.js's RETRYABLE_STATUSES on the server - a 'run' job that finished without
+// Mirrors jobRetry.js's isRetryableStatus on the server - a 'run' job that finished without
 // succeeding can be retried; nothing else can (a 'preview' job just re-renders for free the next
-// time its photo is previewed, and a still-open or successfully-'done' job has nothing to retry).
+// time its photo is previewed, and a still-open job has nothing to retry yet). A 'done' job isn't
+// automatically excluded: the script can complete without crashing/cancelling/interrupting while
+// still failing every file it touched (e.g. a batch of corrupt input) - that's just as
+// "didn't finish, want to try again" as an 'error' job. See jobRetry.js for the full reasoning.
 const RETRYABLE_STATUSES = new Set(['error', 'cancelled', 'interrupted']);
 function isRetryable(job) {
-  return job.type === 'run' && RETRYABLE_STATUSES.has(job.status);
+  if (job.type !== 'run') return false;
+  return RETRYABLE_STATUSES.has(job.status) || (job.status === 'done' && job.result?.failed > 0);
 }
 
 function jobLabel(job) {

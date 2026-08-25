@@ -27,6 +27,7 @@ design_style_blueprint.md
 /V5_RESEARCH.md
 /V6_PLAN.md
 /V7_PLAN.md
+/V8_PLAN.md
 /docs/*
 !/docs/gpu_spike_findings.md
 /_development/

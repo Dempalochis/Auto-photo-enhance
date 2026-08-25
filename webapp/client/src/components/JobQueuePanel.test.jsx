@@ -196,7 +196,7 @@ describe('JobQueuePanel', () => {
     });
   }
 
-  test('a "done" run job does not show a Retry button - there is nothing to retry', async () => {
+  test('a "done" run job with no failures does not show a Retry button - there is nothing to retry', async () => {
     api.listJobs.mockResolvedValue({
       jobs: [{
         id: 'run-1', type: 'run', status: 'done', meta: { projectName: 'All Good' }, result: { processed: 1, skipped: 0, failed: 0 },
@@ -205,6 +205,20 @@ describe('JobQueuePanel', () => {
     renderPanel();
     await screen.findByText('All Good');
     expect(screen.queryByRole('button', { name: 'Retry' })).not.toBeInTheDocument();
+  });
+
+  // A 'done' job isn't automatically "nothing to retry" - the script can complete without
+  // crashing/cancelling/interrupting while still failing every file it touched. Reproduced live
+  // during V8 Phase 1 QA (a 2-corrupt-file batch landed as done/processed:0/failed:2 with no way
+  // to retry it) - this is the fix for that finding.
+  test('a "done" run job where every file failed still shows a Retry button', async () => {
+    api.listJobs.mockResolvedValue({
+      jobs: [{
+        id: 'run-1', type: 'run', status: 'done', meta: { projectName: 'All Failed' }, result: { processed: 0, skipped: 0, failed: 2 },
+      }],
+    });
+    renderPanel();
+    expect(await screen.findByRole('button', { name: 'Retry' })).toBeInTheDocument();
   });
 
   test('a failed "preview" job does not show a Retry button - only run jobs are retryable', async () => {
