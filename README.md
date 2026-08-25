@@ -1,28 +1,56 @@
 # Auto-photo-enhance
 
-Automated batch enhancement of Sony `.ARW` raw photos to `.jpg`, using [RawTherapee](https://rawtherapee.com/)'s command-line renderer (`rawtherapee-cli`). Two ways to use it: a one-click `.bat` for a plain batch conversion, or the [web UI](#web-ui) for browsing/filtering photos by date, comparing all 32 presets on a photo before committing, and running named/dated project batches.
+Automated batch enhancement of Sony `.ARW` raw photos to `.jpg`, using [RawTherapee](https://rawtherapee.com/)'s command-line renderer (`rawtherapee-cli`). Two ways to use it: the [web UI](#web-ui) (recommended — `setup.bat`/`start.bat`, no terminal needed) for browsing/filtering photos by date, comparing all 32 presets on a photo before committing, and running named/dated project batches; or a plain one-click `.bat` for a no-frills CLI batch conversion.
+
+## Just want to use it?
+
+```
+git clone https://github.com/Dempalochis/Auto-photo-enhance.git
+cd Auto-photo-enhance
+```
+Double-click **`setup.bat`**, then double-click **`start.bat`**. No terminal needed beyond the clone itself.
+
+`setup.bat` checks/installs everything the web UI needs, in order — if it stops partway through, the message printed says exactly which of these failed and what to do about it:
+1. **Node.js** — hard requirement. If missing, it stops immediately and points you to [nodejs.org](https://nodejs.org/) (install the LTS version, then re-run `setup.bat`).
+2. **RawTherapee** and **ExifTool** — auto-detected if already installed anywhere it knows to look. If either is missing and [`winget`](https://learn.microsoft.com/en-us/windows/package-manager/winget/) is available (built into Windows 10 1709+ and Windows 11 by default), it installs the missing one automatically. On an older system without `winget`, it prints a download link instead ([rawtherapee.com/downloads](https://rawtherapee.com/downloads) / [exiftool.org](https://exiftool.org)) — install manually, then set `rtPath`/`exiftoolPath` in `config/config.json` (created automatically from the tracked `config/config.example.json` template on first run) to wherever you put them. ExifTool specifically is optional — the app still runs without it; you just lose capture-date sorting (falls back to file-modified time) and thumbnails.
+3. `npm install`, then `npm run build` (the one-time production build — see [Starting it up](#starting-it-up) below for what this actually produces).
+
+`start.bat` then launches the whole app on one port and opens it in your browser at `http://localhost:5175`. Closing that window stops the server.
+
+**Updating** — pull the latest code, then re-run `setup.bat` before `start.bat` (picks up any new dependencies or rebuilds the client; safe to re-run any time, it never overwrites your existing `config/config.json` settings):
+```
+git pull
+```
+
+Prefer to run it from source for development, or just want the plain CLI batch converter with no web UI at all? Keep reading below.
 
 ## Quick start (CLI)
 
-Double-click [`auto_enhance_arw_to_jpg.bat`](auto_enhance_arw_to_jpg.bat). It converts every `.arw` file in the repo root into `edited_jpg/`, using the settings in [`config/config.json`](config/config.json).
+Double-click [`auto_enhance_arw_to_jpg.bat`](auto_enhance_arw_to_jpg.bat). It converts every `.arw` file in the repo root into `edited_jpg/`, using the settings in `config/config.json` (see "Config" below — copy it from the tracked [`config/config.example.json`](config/config.example.json) template first if you haven't run `setup.bat`).
 
 ## Layout
 
 ```
-package.json            root launcher only (npm install && npm run dev) - see Web UI > Starting it up
-config/config.json     settings: RawTherapee path, output/log dirs, quality, profiles, auto-profile rules, preset
+setup.bat               first-run setup: checks/installs prerequisites, builds the client - see "Just want to use it?"
+start.bat                launches the app (npm start) and opens it in your browser
+package.json            root launcher - npm install / npm run dev (dev) / npm run build + npm start (production)
+config/config.example.json  tracked template - setup.ps1 copies this to config.json (untracked, local-only) on first run
+config/config.json     your local settings: RawTherapee/ExifTool paths, output/log dirs, quality, presets (gitignored)
 profiles/*.pp3          RawTherapee color-correction profiles (named, selectable, ISO-branched)
 presets/*.pp3           RawTherapee "look" presets, stacked on top of a profile (see Presets below)
-scripts/lib_common.ps1  shared config-loading / base-profile-resolution logic
+scripts/setup.ps1       first-run setup logic (setup.bat wraps this)
+scripts/lib_common.ps1  shared config-loading / base-profile-resolution / prerequisite-discovery logic
 scripts/auto_enhance.ps1   main pipeline: converts *.arw -> *.jpg, logs, handles failures
 scripts/watch_folder.ps1   optional watch-folder wrapper around auto_enhance.ps1
 scripts/preview_presets.ps1   renders one example photo through every preset for comparison
+scripts/tests/          Pester tests for the PowerShell pipeline - see Testing below
 logs/*.csv              one run per file per run: status, exit code, duration, ISO, profile, preset used
 edited_jpg/             output JPEGs
 preview/                example photo rendered through every preset + an index.html gallery
 webapp/server/          Node/Express backend for the web UI (wraps the same scripts above)
 webapp/server/tests/    automated backend tests (node:test) - see Testing below
 webapp/client/          React + Tailwind + Radix UI frontend
+webapp/client/dist/     production client build (npm run build) - what setup.bat/start.bat actually serve
 projects/<name>_<date>/ output of web-UI batch runs, one folder per named/dated project
 docs/gpu_spike_findings.md   GPU-acceleration research spike: findings, real timing data, recommendation
 ```
@@ -36,6 +64,8 @@ docs/gpu_spike_findings.md   GPU-acceleration research spike: findings, real tim
 5. Every run writes a CSV to `logs/` with one row per file (status, exit code, duration, ISO read, profile used, any failure note) and prints a summary (`Processed / Skipped / Failed / Quarantined`). Exit code is non-zero if anything failed.
 
 ## Config (`config/config.json`)
+
+`config/config.json` is local-only (gitignored) since it holds machine-specific paths — `setup.bat`/`setup.ps1` create it automatically from the tracked `config/config.example.json` template and fill in `rtPath`/`exiftoolPath` with whatever it finds installed. Running the CLI directly without ever having run `setup.ps1`? Copy the template yourself first: `copy config\config.example.json config\config.json`, then edit the paths.
 
 ```json
 {
@@ -148,17 +178,19 @@ No WebSocket anywhere in the stack — job/health status is plain REST, polled f
 
 ### Starting it up
 
+Just want to run the app, not develop it? Use `setup.bat`/`start.bat` — see [Just want to use it?](#just-want-to-use-it) at the top of this README. Everything below is the developer workflow (live-reload, separate frontend/backend processes).
+
 First time only, from the repo root:
 ```
 npm install
 ```
 This also installs `webapp/server`'s and `webapp/client`'s own dependencies (a root `postinstall` step) — no need to `cd` into each one separately.
 
-Every time you want to use it:
+Every time you want to develop against it:
 ```
 npm run dev
 ```
-This runs the backend and frontend together (via `concurrently`) in one terminal. Open the URL it prints for the client (`http://localhost:5173`); the backend listens on `http://localhost:5175` and the frontend proxies API calls to it automatically. `Ctrl+C` once stops both.
+This runs the backend and frontend together (via `concurrently`) in one terminal, with live reload. Open the URL it prints for the client (`http://localhost:5173`); the backend listens on `http://localhost:5175` and the frontend proxies API calls to it automatically. `Ctrl+C` once stops both.
 
 Prefer two separate terminals (e.g. to see each side's logs on its own, or to restart just one)? That still works:
 ```
@@ -167,6 +199,13 @@ node webapp/server/server.js
 ```
 cd webapp/client && npm run dev
 ```
+
+**Production build** (what `setup.bat`/`start.bat` actually run, no live reload, one port instead of two):
+```
+npm run build
+npm start
+```
+`npm run build` runs `vite build` and produces `webapp/client/dist/`; `npm start` runs the Express server, which serves that built client directly and answers `/api/*` on the same port (`http://localhost:5175`) — no separate Vite dev server or proxy involved. Re-run `npm run build` after pulling client-side changes; `npm start` alone is enough after a server-only change.
 
 ### Using it
 
@@ -225,7 +264,7 @@ checks, source-folder history, and the queue/Run UI behavior:
 cd webapp/server && npm test
 cd webapp/client && npm test
 ```
-Or, from the repo root (runs both in sequence): `npm test`. As of this writing: 149 server tests (`node --test`) + 95 client tests (`vitest run`), all green.
+Or, from the repo root (runs both in sequence): `npm test`. As of this writing: 155 server tests (`node --test`) + 104 client tests (`vitest run`), all green.
 
 **Automated tests (PowerShell pipeline)** — `auto_enhance.ps1`'s core behaviors (idempotent skip, ISO-based profile branching, preset stacking, output naming, quarantine-after-N-failures) are covered by [Pester](https://pester.dev/), mirroring the Node suites' "tests live next to what they test" layout in `scripts/tests/`. One-time setup (Windows ships an old inbox Pester 3.4 that's too old for this suite's syntax):
 ```
@@ -236,7 +275,7 @@ Then, every time:
 Import-Module Pester -MinimumVersion 5.0.0 -Force
 Invoke-Pester scripts/tests/
 ```
-`Import-Module ... -Force` first is needed because of the old inbox copy above - without it, PowerShell may resolve `Invoke-Pester` to Pester 3.4 instead of the one just installed. As of this writing: 7 tests, all green. `preview_presets.ps1`'s own RawTherapee invocation isn't covered yet - it uses a deliberately different `Start-Process`-based pattern (to run several preview renders concurrently) rather than `auto_enhance.ps1`'s synchronous call, which the current wrapper-function setup doesn't reach.
+`Import-Module ... -Force` first is needed because of the old inbox copy above - without it, PowerShell may resolve `Invoke-Pester` to Pester 3.4 instead of the one just installed. As of this writing: 13 tests, all green (7 covering `auto_enhance.ps1`'s pipeline behavior, 6 covering `setup.ps1`'s ExifTool auto-discovery). `preview_presets.ps1`'s own RawTherapee invocation isn't covered yet - it uses a deliberately different `Start-Process`-based pattern (to run several preview renders concurrently) rather than `auto_enhance.ps1`'s synchronous call, which the current wrapper-function setup doesn't reach.
 
 **Manual/pipeline verification** — each capability below was verified against real sample `.ARW` files during development:
 - Fresh run converts all input files; re-run skips everything (idempotency).
