@@ -31,3 +31,9 @@ design_style_blueprint.md
 /docs/*
 !/docs/gpu_spike_findings.md
 /_development/
+
+# config/config.json holds real, machine-specific paths (RawTherapee/ExifTool install
+# locations) and previously leaked a real dev machine's Windows username via exiftoolPath -
+# local-only from V8 Phase 4 on. config/config.example.json (tracked) is the generic template;
+# setup.ps1 copies it to config.json on first run and auto-discovers real local paths.
+/config/config.json

@@ -62,6 +62,40 @@ function Resolve-RTPath([string]$ConfiguredPath) {
 }
 
 <#
+  Best-effort ExifTool discovery for setup.ps1 (V8 Phase 4): the configured path if it exists,
+  else exiftool.exe on PATH, else a scan of common install locations. Unlike Resolve-RTPath, this
+  can't be as precise - real ExifTool-for-Windows has no single standard install path (the
+  classic distribution is just a renamed .exe dropped anywhere by hand; winget/MSI builds vary
+  too) - a miss here just means setup.ps1's "download and set exiftoolPath manually" fallback
+  message applies. Takes the candidate list as a param (rather than reading $env: directly)
+  purely so Pester can test the scan/precedence logic against fake candidates without depending
+  on this machine's real filesystem.
+#>
+function Find-ExifToolPath([string]$ConfiguredPath, [string[]]$ScanCandidates) {
+    if ($ConfiguredPath -and (Test-Path -LiteralPath $ConfiguredPath)) {
+        return $ConfiguredPath
+    }
+    $onPath = Get-Command "exiftool.exe" -ErrorAction SilentlyContinue
+    if ($onPath) {
+        return $onPath.Source
+    }
+    if (-not $ScanCandidates) {
+        $ScanCandidates = @(
+            (Join-Path $env:LOCALAPPDATA "Programs\ExifTool\ExifTool.exe"),
+            (Join-Path $env:LOCALAPPDATA "Programs\ExifTool\exiftool.exe"),
+            (Join-Path $env:ProgramFiles "ExifTool\exiftool.exe"),
+            (Join-Path ${env:ProgramFiles(x86)} "ExifTool\exiftool.exe")
+        )
+    }
+    foreach ($candidate in $ScanCandidates) {
+        if ($candidate -and (Test-Path -LiteralPath $candidate)) {
+            return $candidate
+        }
+    }
+    return $null
+}
+
+<#
   Returns the subfolder of $FileDir relative to $Root (e.g. "Ceremony"), or "" if $FileDir IS
   $Root or $Root is not set. Used to mirror an input subfolder structure into the output
   folder when scanning recursively, instead of flattening everything into one directory.
