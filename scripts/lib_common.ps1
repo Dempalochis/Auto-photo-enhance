@@ -138,7 +138,7 @@ function Get-BaseProfileForFile($ctx, [System.IO.FileInfo]$file) {
     $isoValue = ""
 
     if ($ctx.ExiftoolAvailable) {
-        $isoRaw = (& $ctx.ExiftoolPath "-ISO" "-s" "-s" "-s" $file.FullName | Out-String).Trim()
+        $isoRaw = Invoke-ExifTool -ExiftoolPath $ctx.ExiftoolPath -FilePath $file.FullName
         $isoInt = 0
         if ([int]::TryParse($isoRaw, [ref]$isoInt)) {
             $isoValue = $isoInt
@@ -147,4 +147,29 @@ function Get-BaseProfileForFile($ctx, [System.IO.FileInfo]$file) {
     }
 
     return @{ ProfilePath = $profilePath; ISO = $isoValue }
+}
+
+<#
+  Thin, named wrapper around the actual ExifTool invocation (just the ISO read used by
+  Get-BaseProfileForFile above) - exists purely so Pester's `Mock` has a command name to
+  intercept. `& $ExiftoolPath ...` is a call to a resolved .exe *path*, not a named command,
+  and Mock cannot intercept that directly. Returns the trimmed raw ISO string (or "" if
+  exiftool printed nothing usable); callers still do their own [int]::TryParse.
+#>
+function Invoke-ExifTool([string]$ExiftoolPath, [string]$FilePath) {
+    return (& $ExiftoolPath "-ISO" "-s" "-s" "-s" $FilePath | Out-String).Trim()
+}
+
+<#
+  Thin, named wrapper around the actual rawtherapee-cli invocation used by auto_enhance.ps1 -
+  same reasoning as Invoke-ExifTool above (Mock needs a named command, not a `& $RTPath` call).
+  Returns Stdout/ExitCode explicitly rather than leaving the caller to read $LASTEXITCODE after
+  the fact, so a Pester mock can fully control both without fighting a global variable across
+  the mock boundary. Not used by preview_presets.ps1, which invokes RawTherapee via
+  Start-Process for concurrent preview renders - a deliberately different pattern (see
+  V7_PLAN.md Phase 3) left out of scope here.
+#>
+function Invoke-RawTherapee([string]$RTPath, [string[]]$RTArgs) {
+    $stdout = & $RTPath @RTArgs | Out-String
+    return [pscustomobject]@{ Stdout = $stdout; ExitCode = $LASTEXITCODE }
 }

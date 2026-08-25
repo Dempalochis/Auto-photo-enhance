@@ -150,9 +150,10 @@ foreach ($arw in $arwFiles) {
     $rtArgs += @("-o", $outFile, "-j$Quality", "-Y", "-q", "-c", $arw.FullName)
 
     $sw = [System.Diagnostics.Stopwatch]::StartNew()
-    $stdout = & $RTPath @rtArgs | Out-String
+    $rtResult = Invoke-RawTherapee -RTPath $RTPath -RTArgs $rtArgs
     $sw.Stop()
-    $exitCode = $LASTEXITCODE
+    $stdout = $rtResult.Stdout
+    $exitCode = $rtResult.ExitCode
 
     $status = "Processed"
     $note = ""

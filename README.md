@@ -227,6 +227,17 @@ cd webapp/client && npm test
 ```
 Or, from the repo root (runs both in sequence): `npm test`. As of this writing: 149 server tests (`node --test`) + 95 client tests (`vitest run`), all green.
 
+**Automated tests (PowerShell pipeline)** — `auto_enhance.ps1`'s core behaviors (idempotent skip, ISO-based profile branching, preset stacking, output naming, quarantine-after-N-failures) are covered by [Pester](https://pester.dev/), mirroring the Node suites' "tests live next to what they test" layout in `scripts/tests/`. One-time setup (Windows ships an old inbox Pester 3.4 that's too old for this suite's syntax):
+```
+Install-Module -Name Pester -Scope CurrentUser -Force -SkipPublisherCheck -MinimumVersion 5.0.0
+```
+Then, every time:
+```
+Import-Module Pester -MinimumVersion 5.0.0 -Force
+Invoke-Pester scripts/tests/
+```
+`Import-Module ... -Force` first is needed because of the old inbox copy above - without it, PowerShell may resolve `Invoke-Pester` to Pester 3.4 instead of the one just installed. As of this writing: 7 tests, all green. `preview_presets.ps1`'s own RawTherapee invocation isn't covered yet - it uses a deliberately different `Start-Process`-based pattern (to run several preview renders concurrently) rather than `auto_enhance.ps1`'s synchronous call, which the current wrapper-function setup doesn't reach.
+
 **Manual/pipeline verification** — each capability below was verified against real sample `.ARW` files during development:
 - Fresh run converts all input files; re-run skips everything (idempotency).
 - Missing RawTherapee executable / missing profile fails fast with a clear message.
