@@ -19,11 +19,14 @@ preview_v6_final/
 design_style_blueprint.md
 
 # Planning docs — decision log kept local-only per Hermes's call; README.md is the one
-# doc that ships to a fresh clone.
+# doc that ships to a fresh clone. Exception: docs/gpu_spike_findings.md is linked directly
+# from README.md as real supplementary documentation, not a planning doc, so it stays tracked
+# (the negation below un-ignores just that one file from the /docs/ rule).
 /BACKLOG.md
 /V4_PLAN.md
 /V5_RESEARCH.md
 /V6_PLAN.md
 /V7_PLAN.md
-/docs/
+/docs/*
+!/docs/gpu_spike_findings.md
 /_development/

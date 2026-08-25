@@ -9,6 +9,7 @@ Double-click [`auto_enhance_arw_to_jpg.bat`](auto_enhance_arw_to_jpg.bat). It co
 ## Layout
 
 ```
+package.json            root launcher only (npm install && npm run dev) - see Web UI > Starting it up
 config/config.json     settings: RawTherapee path, output/log dirs, quality, profiles, auto-profile rules, preset
 profiles/*.pp3          RawTherapee color-correction profiles (named, selectable, ISO-branched)
 presets/*.pp3           RawTherapee "look" presets, stacked on top of a profile (see Presets below)
@@ -124,22 +125,48 @@ There's no universal "best" profile — RawTherapee's own community consensus is
 
 A browser-based front end over the same pipeline above — nothing in it reimplements RawTherapee invocation, it just shells out to `auto_enhance.ps1` / `preview_presets.ps1` and gives you a GUI for the three steps: pick photos, pick a look, run.
 
+### Key features
+
+- **Source folder browsing** — a drive navigator (internal/external/USB, same names Windows Explorer shows) plus a "last 5 folders" recent list, remembered across server restarts.
+- **Photo library filtering** — every `.arw` in the source folder, grouped by month/day from real EXIF capture date, with filename search, from/to date range, and compact/comfortable + newest/oldest sorting.
+- **Always-visible preset grid** — all 32 categorized looks selectable before you've previewed anything; **Preview** renders real thumbnails for all of them at once (disk-cached, so a repeat preview of the same photo is instant).
+- **Job queue** — Active / Up next (drag-to-reorder, pause/re-queue) / Queued previews / History, each with live progress and an ETA derived from recent same-kind jobs.
+- **Retry** a finished `run` job that didn't succeed (error/cancelled/interrupted) — queues a fresh job with the same photos, preset, and output folder. This is a different mechanism from file-level **quarantine** (see [How it works](#how-it-works)): retry re-queues a whole *job* from the UI; quarantine is `auto_enhance.ps1` pulling one *file* out of future runs after repeated failures.
+- **History search + pagination** — filter past jobs by project/preset name, "Load more" to page through the rest without a second request (everything kept is already fetched in one response).
+- **Disk-space warning** — before queuing a run, checks free space against an estimate that accounts for every *other* run already queued ahead of it, not just the new one in isolation. Advisory only, never blocks the run.
+- **Health indicator** — a status pill in the header polling `GET /api/health` every 15s, so a broken `rtPath`/missing ExifTool/etc. shows up on the page itself, not just the server console.
+- **Project Browser** — a read-only, newest-first list of past `projects/<name>_<date>/` output folders (file count + size), so you can see what a prior run produced without leaving the page.
+- **Desktop notifications** — opt-in per-browser-tab; fires even if the tab isn't focused when a job finishes.
+
+### Architecture
+
+```
+Frontend (React) --HTTP (REST + polling)--> Backend (Express) --spawns--> PowerShell scripts --shell out to--> RawTherapee CLI / ExifTool
+```
+
+No WebSocket anywhere in the stack — job/health status is plain REST, polled from the client (`useJob.js`/`JobQueuePanel.jsx` poll every 1.5s for jobs, `HealthIndicator.jsx` every 15s). The backend never talks to RawTherapee/ExifTool directly; it always goes through the same PowerShell scripts the CLI quick-start uses.
+
 ### Starting it up
 
-First time only, install dependencies for both halves:
+First time only, from the repo root:
 ```
-cd webapp/server && npm install
-cd ../client && npm install
+npm install
 ```
+This also installs `webapp/server`'s and `webapp/client`'s own dependencies (a root `postinstall` step) — no need to `cd` into each one separately.
 
-Every time you want to use it, start the backend and the frontend (two separate terminals — leave both running):
+Every time you want to use it:
+```
+npm run dev
+```
+This runs the backend and frontend together (via `concurrently`) in one terminal. Open the URL it prints for the client (`http://localhost:5173`); the backend listens on `http://localhost:5175` and the frontend proxies API calls to it automatically. `Ctrl+C` once stops both.
+
+Prefer two separate terminals (e.g. to see each side's logs on its own, or to restart just one)? That still works:
 ```
 node webapp/server/server.js
 ```
 ```
 cd webapp/client && npm run dev
 ```
-Open the URL Vite prints (`http://localhost:5173`). The backend listens on `http://localhost:5175`; the frontend proxies API calls to it automatically. Close both terminal windows (or `Ctrl+C`) to stop everything.
 
 ### Using it
 
@@ -152,11 +179,19 @@ Open the URL Vite prints (`http://localhost:5173`). The backend listens on `http
 
 **2. Pick a look** — every preset tile (grouped into Nature/Urban/Night/Portrait/Mood sections, plus "None" for color-correction only) is always visible and selectable, even before previewing anything - click a tile any time to choose that preset for **Run**. Click **Preview** on any one photo to actually render it through the color-correction profile plus all 32 presets so the tiles show real thumbnails instead of just names; clicking **Preview** again (on the same or a different photo) overwrites the tiles in place as each new render finishes. Renders are cached per photo on disk, so previewing the same photo again - including reopening the page later - is instant, and the last-previewed photo's thumbnails are restored automatically on reload; a genuinely fresh photo takes a little over 3 minutes to render all 32 looks — previews are deliberately rendered small and fast (`-f` + a forced resize, ~900px, plus rendering a few presets at once) rather than at full quality/resolution, since this view is for comparing looks, not judging fine detail. A preview also no longer waits behind a queued/running batch **Run** — the two use independent lanes, so both progress at the same time.
 
-**3. Run** — type a project name; the output folder (`projects/<name>_<date>/`) updates live as you type. Click **Run** to queue a batch conversion of every selected photo with the chosen preset. Unlike earlier versions, **Run never blocks**: it queues the job and immediately clears your selection so you can pick a different set of photos (from the same folder or a different one) and click **Run** again to queue the next job, without waiting for the first to finish. If the output drive looks low on space for the batch you're about to queue, a warning appears (based on a rough per-file estimate) — it's advisory only and never blocks the run, since already-converted files are always safe either way.
+**3. Run** — type a project name; the output folder (`projects/<name>_<date>/`) updates live as you type. Click **Run** to queue a batch conversion of every selected photo with the chosen preset. Unlike earlier versions, **Run never blocks**: it queues the job and immediately clears your selection so you can pick a different set of photos (from the same folder or a different one) and click **Run** again to queue the next job, without waiting for the first to finish. If the output drive looks low on space for the batch you're about to queue, a warning appears (based on a rough per-file estimate that also accounts for every other run already queued ahead of this one, since that work will consume space first) — it's advisory only and never blocks the run, since already-converted files are always safe either way.
 
 **Job queue** — below Run, split into **Active** (currently running), **Up next** (queued batch runs — drag the ⠿ handle to reorder which one runs next), **Queued previews** (queued preset previews, shown plainly since there's rarely more than one), and **History** (everything finished), each with live progress, an estimated time remaining, and a **Cancel** button for anything not finished yet. The ETA is derived from how long recent jobs of the same kind actually took (and, once a job is running, from its own progress so far) — it reads "estimating…" until there's enough data to base a number on, rather than showing a guess. Cancelling a job that's actively running kills the underlying RawTherapee process and removes the one file it was mid-write on, so a partial JPEG never gets mistaken for a finished one on a later run; everything converted before the cancel stays on disk. Click **Notify: off** to switch it to **Notify: on** and get a desktop notification (plus a permission prompt the first time) whenever a job finishes — handy since jobs now run in the background instead of holding up the page.
 
 **Pausing a queued job** — click **Pause** on anything in "Up next" to hold it: it stays right where it is (still draggable, still visible) but won't run until you click its **Re-queue** button. A paused job never resumes on its own — that's deliberate, so it stays out of the way for as long as you want without silently jumping back into the queue while you're not looking. Only a job that hasn't started yet can be paused; once a job is actually running there's no way to freeze a RawTherapee process mid-render, so an active job can only be **Cancel**led.
+
+**Retrying a job** — a **History** entry for a `run` job that ended in Error, Cancelled, or Interrupted shows a **Retry** button: click it to queue a brand-new job against the same photos, preset, and output folder. This is *not* the same thing as quarantine (see [How it works](#how-it-works)) — retry acts on one job from the UI, on demand; quarantine is `auto_enhance.ps1` pulling a specific file out of future runs automatically after it fails `quarantineAfterFailures` times in a row across separate invocations. A preview job has nothing to retry (previewing again just re-renders for free), so it never shows the button.
+
+**Searching history** — the **History** section has a filter box (matches project or preset name) plus a **Load more** button that pages through whatever's already been fetched rather than making a new request each time; typing a fresh search resets back to the default page size.
+
+**Health indicator** — the small status pill in the page header (Healthy/Degraded/Error) polls the backend's config sanity checks (valid `rtPath`, working ExifTool, etc.) every 15 seconds; hover it for details when it's not "Healthy". "Error" also covers the backend being completely unreachable, not just misconfigured.
+
+**Past projects** — the **Past projects** panel is a separate, read-only view of everything **3. Run** has ever produced: every `projects/<name>_<date>/` folder, newest first, with its file count and total size. It only reflects finished output, not the live queue (that's the Job queue panel above) — click **Refresh** to pick up a run that just finished, since it doesn't auto-poll like the queue does.
 
 ### Gotcha: one job of each kind runs at a time
 
@@ -190,6 +225,7 @@ checks, source-folder history, and the queue/Run UI behavior:
 cd webapp/server && npm test
 cd webapp/client && npm test
 ```
+Or, from the repo root (runs both in sequence): `npm test`. As of this writing: 149 server tests (`node --test`) + 95 client tests (`vitest run`), all green.
 
 **Manual/pipeline verification** — each capability below was verified against real sample `.ARW` files during development:
 - Fresh run converts all input files; re-run skips everything (idempotency).
