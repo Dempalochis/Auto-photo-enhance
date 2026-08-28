@@ -39,6 +39,10 @@ design_style_blueprint.md
 !/docs/gpu_spike_findings.md
 /_development/
 
+# Local-only real raw sample files (CC0, from raw.pixls.us) used to verify the pipeline
+# accepts/processes each supported format end-to-end - never shipped, same as _development/.
+/_samples/
+
 # config/config.json holds real, machine-specific paths (RawTherapee/ExifTool install
 # locations) and previously leaked a real dev machine's Windows username via exiftoolPath -
 # local-only from V8 Phase 4 on. config/config.example.json (tracked) is the generic template;

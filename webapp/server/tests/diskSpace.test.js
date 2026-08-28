@@ -2,6 +2,14 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const { checkDiskSpaceWarning, estimateRequiredBytes, AVG_OUTPUT_JPEG_BYTES } = require('../diskSpace');
 
+test('AVG_OUTPUT_JPEG_BYTES stays >= the largest real q95 output observed across supported formats', () => {
+  // V9 spot-check: a detailed 24MP Fujifilm X-Trans frame produced a ~9.4MB q95 JPEG through the
+  // real pipeline. The estimate is a warn-only heuristic and erring high is the safe direction,
+  // so guard against it being lowered back under a realistic high-MP output by accident.
+  const LARGEST_OBSERVED_REAL_OUTPUT = 9.4 * 1024 * 1024;
+  assert.ok(AVG_OUTPUT_JPEG_BYTES >= LARGEST_OBSERVED_REAL_OUTPUT);
+});
+
 test('estimateRequiredBytes scales linearly with file count', () => {
   assert.equal(estimateRequiredBytes(1), AVG_OUTPUT_JPEG_BYTES);
   assert.equal(estimateRequiredBytes(10), AVG_OUTPUT_JPEG_BYTES * 10);

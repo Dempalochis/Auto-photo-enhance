@@ -1,7 +1,13 @@
-// Rough estimate from real-world samples taken during development: full-resolution Sony ARW
-// (~24MP) converted to a q95 JPEG landed around 6-7MB per file. Rounded up for headroom - this
-// is a warn-only heuristic, not a precise prediction, since actual size depends on scene detail.
-const AVG_OUTPUT_JPEG_BYTES = 8 * 1024 * 1024;
+// Rough per-file estimate for a full-resolution raw -> q95 JPEG. Started life calibrated on Sony
+// ARW (~24MP: 6-7MB per file). V9 spot-checks against real files of the newly-supported formats
+// (Nikon D200 10MP ~4MB, Leica M9 18MP ~5.4MB, Fujifilm X-T2 24MP X-Trans ~9.4MB) showed a
+// detailed high-MP frame can exceed the old 8MB figure, so it's bumped to 12MB: a single
+// cross-format rough average, deliberately not a per-format/per-resolution model. This is a
+// warn-only heuristic that never blocks a run (see checkDiskSpaceWarning), so erring high (warn
+// a bit early) is the safe direction; a 40MP+ body on very detailed scenes may still exceed it,
+// which the "advisory only" design absorbs the same way it already does for scene-complexity
+// variance within a single format.
+const AVG_OUTPUT_JPEG_BYTES = 12 * 1024 * 1024;
 
 function estimateRequiredBytes(fileCount) {
   return fileCount * AVG_OUTPUT_JPEG_BYTES;
