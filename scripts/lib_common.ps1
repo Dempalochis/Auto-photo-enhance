@@ -151,6 +151,7 @@ function Initialize-BaseProfileContext([string]$RepoRoot, $config, [string]$Prof
 
     $ctx = [pscustomobject]@{
         StaticProfilePath = $ProfilePath
+        ProfilesDir = Join-Path $RepoRoot "profiles"
         AutoProfileEnabled = $false
         ExiftoolPath = $null
         ExiftoolAvailable = $false
@@ -179,8 +180,13 @@ function Initialize-BaseProfileContext([string]$RepoRoot, $config, [string]$Prof
 }
 
 <#
-  Returns @{ ProfilePath = ...; ISO = "" or int } for a given raw file, using the context
-  built by Initialize-BaseProfileContext.
+  Returns @{ ProfilePath = ...; FormatOverlayPath = ... or $null; ISO = "" or int } for a given
+  raw file, using the context built by Initialize-BaseProfileContext.
+
+  FormatOverlayPath: a thin per-format pp3 (e.g. profiles/raf.pp3 for .raf files) meant to be
+  stacked ON TOP of ProfilePath - for sensor-specific corrections the Sony-tuned base profiles
+  don't cover (currently: X-Trans white balance). $null when no profiles/<ext>.pp3 exists, which
+  is the case for most formats.
 #>
 function Get-BaseProfileForFile($ctx, [System.IO.FileInfo]$file) {
     $profilePath = $ctx.StaticProfilePath
@@ -195,7 +201,14 @@ function Get-BaseProfileForFile($ctx, [System.IO.FileInfo]$file) {
         }
     }
 
-    return @{ ProfilePath = $profilePath; ISO = $isoValue }
+    $formatOverlay = $null
+    $ext = $file.Extension.TrimStart('.').ToLowerInvariant()
+    if ($ext -and $ctx.ProfilesDir) {
+        $candidate = Join-Path $ctx.ProfilesDir "$ext.pp3"
+        if (Test-Path -LiteralPath $candidate) { $formatOverlay = $candidate }
+    }
+
+    return @{ ProfilePath = $profilePath; FormatOverlayPath = $formatOverlay; ISO = $isoValue }
 }
 
 <#

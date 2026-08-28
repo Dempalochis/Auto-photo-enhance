@@ -1,0 +1,20 @@
+# Format overlay for Fujifilm .RAF (X-Trans) files - stacked on top of the base
+# colour-correction profile (default.pp3 / lowlight.pp3), before any look preset.
+# Auto-applied by scripts/lib_common.ps1's Get-BaseProfileForFile whenever a
+# profiles/<ext>.pp3 exists for the file's extension.
+#
+# Why: the base profile uses RawTherapee's ITC auto white balance
+# ([White Balance] Setting=autitcgreen), which was tuned against Sony Bayer
+# output. On the one real X-Trans sample tested (Fujifilm X-T2, indoor grey-card
+# shot) ITC left a measurable cool/blue cast - light-grey patch B-G +20, R-G -15.
+# Switching to the camera's own recorded white balance neutralises it
+# (B-G +6, R-G +1) with no other pipeline change. Bayer .NEF/.DNG samples
+# rendered neutral on the unmodified base profile and get no overlay.
+#
+# This is a MEASURED STARTING POINT from a single sample, not a calibrated
+# profile - refine it against your own X-Trans shots with preview_presets.ps1
+# before trusting a look for a shoot (see README "Format support note").
+
+[White Balance]
+Enabled=true
+Setting=Camera

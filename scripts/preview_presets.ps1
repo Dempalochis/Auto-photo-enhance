@@ -98,6 +98,7 @@ function Build-RTArgs($label, $presetPath) {
     $rtArgs = @()
     if ($fastResizeAvailable) { $rtArgs += "-f" }
     $rtArgs += @("-p", $base.ProfilePath)
+    if ($base.FormatOverlayPath) { $rtArgs += @("-p", $base.FormatOverlayPath) }
     if ($presetPath) { $rtArgs += @("-p", $presetPath) }
     if ($fastResizeAvailable) { $rtArgs += @("-p", $fastResizePp3) }
     $rtArgs += @("-o", $outFile, "-j$Quality", "-Y", "-q", "-c", $sourceItem.FullName)

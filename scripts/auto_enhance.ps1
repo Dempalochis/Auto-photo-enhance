@@ -144,12 +144,15 @@ foreach ($arw in $arwFiles) {
 
     $base = Get-BaseProfileForFile -ctx $baseCtx -file $arw
     $profileForThisFile = $base.ProfilePath
+    $formatOverlay = $base.FormatOverlayPath
     $isoValue = $base.ISO
 
     $presetLabel = if ($presetPath) { $Preset } else { "none" }
-    Write-Host "Enhancing $($arw.Name) (ISO=$isoValue, profile=$([System.IO.Path]::GetFileNameWithoutExtension($profileForThisFile)), preset=$presetLabel)"
+    $overlayLabel = if ($formatOverlay) { ", overlay=$([System.IO.Path]::GetFileNameWithoutExtension($formatOverlay))" } else { "" }
+    Write-Host "Enhancing $($arw.Name) (ISO=$isoValue, profile=$([System.IO.Path]::GetFileNameWithoutExtension($profileForThisFile))$overlayLabel, preset=$presetLabel)"
 
     $rtArgs = @("-p", $profileForThisFile)
+    if ($formatOverlay) { $rtArgs += @("-p", $formatOverlay) }
     if ($presetPath) { $rtArgs += @("-p", $presetPath) }
     $rtArgs += @("-o", $outFile, "-j$Quality", "-Y", "-q", "-c", $arw.FullName)
 
