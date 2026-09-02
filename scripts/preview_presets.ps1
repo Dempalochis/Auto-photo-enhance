@@ -56,6 +56,17 @@ function Fail($message) {
     exit 1
 }
 
+# Start-Process -ArgumentList <array> does NOT reliably quote elements containing spaces on
+# Windows PowerShell 5.1: a source path like "C:\Users\me\My Photos\x.arw" reaches RawTherapee
+# split into separate tokens, so it opens nothing and writes no output file - every preview tile
+# then fails with "no output file" (auto_enhance.ps1 avoids this by using `& $RTPath @args`, but
+# that pattern can't drive the concurrent redirected processes this script needs). Pre-join into
+# one correctly-quoted command-line string instead. None of the args here end in a backslash
+# (paths end in .arw/.jpg/.pp3), so a plain wrapping quote is sufficient - no \" edge case.
+function ConvertTo-ArgLine([string[]]$Argv) {
+    ($Argv | ForEach-Object { if ($_ -match '\s') { '"' + $_ + '"' } else { $_ } }) -join ' '
+}
+
 if (-not $ConfigPath) { $ConfigPath = Join-Path $RepoRoot "config\config.json" }
 $config = Read-EnhanceConfig $ConfigPath
 
@@ -130,9 +141,9 @@ while ($queue.Count -gt 0 -or $active.Count -gt 0) {
         $stdoutFile = Join-Path $stdoutDir "$($item.Label).out.txt"
         $stderrFile = Join-Path $stdoutDir "$($item.Label).err.txt"
         Write-Host "Rendering $($item.Label)..."
-        $proc = Start-Process -FilePath $RTPath -ArgumentList $item.Args -NoNewWindow -PassThru `
+        $proc = Start-Process -FilePath $RTPath -ArgumentList (ConvertTo-ArgLine $item.Args) -NoNewWindow -PassThru `
             -RedirectStandardOutput $stdoutFile -RedirectStandardError $stderrFile
-        $active.Add([pscustomobject]@{ Process = $proc; Item = $item; StdoutFile = $stdoutFile })
+        $active.Add([pscustomobject]@{ Process = $proc; Item = $item; StdoutFile = $stdoutFile; StderrFile = $stderrFile })
     }
 
     Start-Sleep -Milliseconds 150
@@ -159,6 +170,24 @@ while ($queue.Count -gt 0 -or $active.Count -gt 0) {
                 # presence is required, so it's free to carry a real reason instead of an exit code.
                 $reason = if (-not $outFileExists) { "no output file" } else { "RawTherapee printed its usage/help text instead of rendering" }
                 Write-Host "FAILED rendering $($a.Item.Label) ($reason)" -ForegroundColor Red
+                # The per-process stdout/stderr files are deleted below, so echo what RawTherapee
+                # actually said into this script's own stdout now - otherwise a caller (the web UI
+                # server, or someone reading the console) sees "no output file" with zero clue why.
+                # First failure only, to avoid 33 identical dumps when the cause is shared (e.g. a
+                # bad source path) - every later tile prints just its one-line FAILED reason above.
+                $stderr = if (Test-Path -LiteralPath $a.StderrFile) { Get-Content -LiteralPath $a.StderrFile -Raw -ErrorAction SilentlyContinue } else { "" }
+                if (-not $script:diagShown) {
+                    $script:diagShown = $true
+                    Write-Host "  rt cmd: `"$RTPath`" $(ConvertTo-ArgLine $a.Item.Args)" -ForegroundColor DarkGray
+                    $diag = (@($stdout, $stderr) -join "`n").Trim()
+                    if ($diag) {
+                        foreach ($l in (($diag -split "`r?`n") | Where-Object { $_ } | Select-Object -Last 10)) {
+                            Write-Host "  rt> $l" -ForegroundColor DarkGray
+                        }
+                    } else {
+                        Write-Host "  rt> (RawTherapee produced no stdout/stderr at all)" -ForegroundColor DarkGray
+                    }
+                }
             }
             $results.Add([pscustomobject]@{ Label = $a.Item.Label; OutFile = "$($a.Item.Label).jpg"; Ok = $ok })
         } else {
