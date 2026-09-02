@@ -291,6 +291,11 @@ app.post('/api/preview', (req, res) => {
   const currentFingerprint = presetsFingerprint(cfg.presetsDir, currentPresets);
 
   const job = enqueue('preview', async (job) => {
+    console.log(`[preview ${String(job.id).slice(0, 6)}] photo=${photo}`);
+    console.log(`[preview ${String(job.id).slice(0, 6)}]   sourceFile = ${sourceFile}`);
+    console.log(`[preview ${String(job.id).slice(0, 6)}]   cacheDir   = ${cacheDir}`);
+    console.log(`[preview ${String(job.id).slice(0, 6)}]   presets    = [${currentPresets.join(', ')}]`);
+
     let existingManifest = null;
     try {
       existingManifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
@@ -299,6 +304,7 @@ app.post('/api/preview', (req, res) => {
       // miss below, which just means a normal (re-)render, not a failure.
     }
     const cached = isManifestFresh(existingManifest, currentFingerprint);
+    console.log(`[preview ${String(job.id).slice(0, 6)}]   cache      = ${cached ? 'HIT (serving existing tiles)' : 'MISS (rendering)'}`);
 
     const urlFor = (label) => `/webapp-cache/previews/${photoKey}/${label}.jpg`;
     const labels = ['00_base_only', ...currentPresets];
@@ -326,6 +332,15 @@ app.post('/api/preview', (req, res) => {
       });
 
       const allOk = job.progress.items.every((i) => i.status === 'done');
+      const doneCount = job.progress.items.filter((i) => i.status === 'done').length;
+      const failed = job.progress.items.filter((i) => i.status !== 'done').map((i) => `${i.label} (${i.status})`);
+      console.log(`[preview ${String(job.id).slice(0, 6)}] script exit ${exitCode}, ${doneCount}/${job.progress.items.length} tiles rendered`);
+      if (failed.length > 0) {
+        console.error(`[preview ${String(job.id).slice(0, 6)}] NOT rendered: ${failed.join(', ')}`);
+        console.error(`[preview ${String(job.id).slice(0, 6)}] see the "[preview_presets.ps1 ...]" lines above for the PowerShell-side reason `
+          + '(common causes: config/config.json rtPath points at a RawTherapee CLI that is not installed on this machine, '
+          + 'or the source photo is unreadable)');
+      }
       if (allOk) {
         fs.writeFileSync(manifestPath, JSON.stringify({ presetsFingerprint: currentFingerprint, generatedAt: Date.now() }));
       } else if (exitCode !== 0) {

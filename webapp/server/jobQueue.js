@@ -237,6 +237,8 @@ function runNext(type) {
       } else {
         job.status = 'error';
         job.error = err.message || String(err);
+        console.error(`[jobQueue] job ${job.id} (${type}) errored: ${job.error}`);
+        if (err && err.stack) console.error(err.stack);
       }
     })
     .finally(() => {
