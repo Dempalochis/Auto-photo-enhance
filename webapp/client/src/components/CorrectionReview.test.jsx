@@ -45,6 +45,12 @@ describe('CorrectionReview', () => {
     expect(api.startAnalyze).toHaveBeenCalledWith(['a.ARW'], {});
   });
 
+  test('a photo without a plan shows "Not analysed yet"', async () => {
+    api.getCorrection.mockResolvedValueOnce({ path: 'n.ARW', plan: null, source: null });
+    renderIt({ selectedPhotos: [{ relPath: 'n.ARW' }], llm });
+    expect(await screen.findByText('Not analysed yet.')).toBeInTheDocument();
+  });
+
   test('a + click saves the edited plan and re-renders the after image', async () => {
     const user = userEvent.setup();
     renderIt({ selectedPhotos: [{ relPath: 'a.ARW' }], llm });

@@ -272,7 +272,7 @@ export default function App() {
                 onSceneSelected={handleSceneSelected}
                 onQueueAllScenes={handleQueueAllScenes}
                 sceneRunCount={sceneRuns.length}
-                sceneActions={(group) => (
+                sceneActions={(group, view) => (
                   <>
                     {group.scene && group.scene.id !== '__ungrouped__' && (
                       <select
@@ -283,7 +283,7 @@ export default function App() {
                           if (e.target.value) next[group.scene.id] = e.target.value; else delete next[group.scene.id];
                           return next;
                         })}
-                        className="text-[10px] py-0.5 px-1 max-w-[110px]"
+                        className="text-[10px] py-0.5 px-1 w-[92px]"
                       >
                         <option value="">preset…</option>
                         <option value="none">none</option>
@@ -296,6 +296,7 @@ export default function App() {
                       selected={selected}
                       onChanged={(r) => setScenes(r.scenes || [])}
                       onError={setLoadError}
+                      sortOrder={view && view.sortOrder}
                     />
                   </>
                 )}

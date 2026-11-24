@@ -89,7 +89,7 @@ export default function CorrectionReview({ selectedPhotos, llm }) {
   const shownKey = shown.map((p) => p.relPath).join('|');
 
   const refresh = useCallback(async (paths) => {
-    const entries = await Promise.all(paths.map((p) => getCorrection(p).then((d) => [p, d]).catch(() => [p, null])));
+    const entries = await Promise.all(paths.map((p) => getCorrection(p).then((d) => [p, d && d.plan ? d : null]).catch(() => [p, null])));
     setData((prev) => ({ ...prev, ...Object.fromEntries(entries) }));
   }, []);
 

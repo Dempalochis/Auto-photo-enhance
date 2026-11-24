@@ -40,6 +40,9 @@ PowerShell line is echoed there as `[auto_enhance.ps1 abc123] …`).
 
 - [ ] 1.1 `auto_enhance_arw_to_jpg.bat` on a small folder (3–5 raws): console lines look exactly as
       before (no `@@EVENT` lines), outputs are `name.jpg` / `name_<preset>.jpg`, and the CSV has the same columns.
+- [ ] 1.1b `start_all.bat` (dev mode): two windows open (server on 5175, Vite on 5173), and the browser opens
+      `http://localhost:5173` after ~5 s. On Linux the same steps had both servers up in under 0.5 s.
+      The Vite window should no longer print an "@import must precede" warning (fixed).
 - [ ] 1.2 Web UI (`start.bat`): pick photos → preset → **Run**. Progress per photo moves as before, the
       job finishes, and the files are in `projects\<name>_<date>\`.
 - [ ] 1.3 Preview a photo: 33 tiles render, then preview it again → instant (cache hit).

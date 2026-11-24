@@ -3,11 +3,13 @@ import {
   renameScene, mergeScenes, splitScene, moveToScene,
 } from '../api';
 import { UNGROUPED_KEY } from '../sceneUtils';
-import Hint from './Hint';
 
 // Pure helpers (unit-tested): what the scene editor can do with the current selection.
-export function nextSceneId(scenes, id) {
+// The scene shown BELOW this one: the next one in time when sorted oldest first, the previous one
+// when sorted newest first (the picker's default) - so "Merge ↓" always means what it shows.
+export function nextSceneId(scenes, id, sortOrder = 'oldest') {
   const ordered = [...(scenes || [])].sort((a, b) => (a.start || '').localeCompare(b.start || ''));
+  if (sortOrder === 'newest') ordered.reverse();
   const i = ordered.findIndex((s) => s.id === id);
   return i >= 0 && i < ordered.length - 1 ? ordered[i + 1].id : null;
 }
@@ -30,13 +32,13 @@ export function movableInto(scene, selected) {
  * "edited", so Find scenes never regroups or renames it again.
  */
 export default function SceneActions({
-  group, scenes, selected, onChanged, onError,
+  group, scenes, selected, onChanged, onError, sortOrder = 'oldest',
 }) {
   const [renaming, setRenaming] = useState(false);
   const [name, setName] = useState('');
   if (group.key === UNGROUPED_KEY) return null;
   const { scene } = group;
-  const nextId = nextSceneId(scenes, scene.id);
+  const nextId = nextSceneId(scenes, scene.id, sortOrder);
   const splitAt = splitPointFor(scene, selected);
   const movable = movableInto(scene, selected);
   const run = (p) => p.then(onChanged).catch((err) => onError && onError(err.message));
@@ -57,17 +59,12 @@ export default function SceneActions({
   return (
     <div className="flex items-center gap-1" role="group" aria-label={`Edit scene ${scene.name}`}>
       <button type="button" className="btn-secondary text-[10px] py-0.5 px-1.5" onClick={() => { setName(scene.name || ''); setRenaming(true); }}>Rename</button>
-      <Hint text="Merges this scene with the one right after it.">
-        <button type="button" disabled={!nextId} className="btn-secondary text-[10px] py-0.5 px-1.5" onClick={() => run(mergeScenes([scene.id, nextId]))}>Merge ↓</button>
-      </Hint>
-      <Hint text="Select a photo in this scene, then click to start a new scene right after it.">
-        <button type="button" disabled={!splitAt} className="btn-secondary text-[10px] py-0.5 px-1.5" onClick={() => run(splitScene(scene.id, splitAt))}>Split</button>
-      </Hint>
-      <Hint text="Moves the selected photos from other scenes into this one.">
-        <button type="button" disabled={movable.length === 0} className="btn-secondary text-[10px] py-0.5 px-1.5" onClick={() => run(moveToScene(movable, scene.id))}>
-          Move {movable.length || ''} here
-        </button>
-      </Hint>
+      {/* Plain tooltips (title), not <Hint>: four "?" icons per scene header crowded the row. */}
+      <button type="button" title="Merges this scene with the one shown right below it." disabled={!nextId} className="btn-secondary text-[10px] py-0.5 px-1.5" onClick={() => run(mergeScenes([scene.id, nextId]))}>Merge ↓</button>
+      <button type="button" title="Select a photo in this scene, then click: the photos taken after it become a new scene." disabled={!splitAt} className="btn-secondary text-[10px] py-0.5 px-1.5" onClick={() => run(splitScene(scene.id, splitAt))}>Split</button>
+      <button type="button" title="Moves the selected photos from other scenes into this one." disabled={movable.length === 0} className="btn-secondary text-[10px] py-0.5 px-1.5" onClick={() => run(moveToScene(movable, scene.id))}>
+        Move {movable.length || ''} here
+      </button>
     </div>
   );
 }

@@ -1,8 +1,8 @@
 const fs = require('fs');
 const path = require('path');
 const { randomUUID } = require('crypto');
-const { spawn } = require('child_process');
 const { atomicWriteFileSync } = require('./atomicFile');
+const { killProcessTree } = require('./procTree');
 
 // Job manager: a persistent FIFO queue, one per job type ("lane").
 //
@@ -286,18 +286,10 @@ function cancelJob(id) {
     if (typeof job.onCancel === 'function') {
       try { job.onCancel(job); } catch (err) { console.error(`onCancel hook failed for job ${id}:`, err); }
     }
-    if (job._proc) {
-      try { job._proc.kill(); } catch (err) { console.error(`failed to kill process for job ${id}:`, err); }
-      // Belt-and-suspenders on Windows: killing the direct child (powershell.exe) does not
-      // necessarily kill its grandchild (rawtherapee-cli.exe) - ask Windows to kill the whole
-      // tree too. Best-effort: a stale/already-dead PID just fails harmlessly here.
-      if (job._proc.pid) {
-        try {
-          const killer = spawn('taskkill', ['/pid', String(job._proc.pid), '/T', '/F']);
-          killer.on('error', () => {}); // e.g. taskkill not found - nothing more to do
-        } catch { /* best effort */ }
-      }
-    }
+    // Kills powershell.exe AND its rawtherapee-cli child (see procTree.js).
+    if (job._proc) killProcessTree(job._proc);
+    // An AI run/analysis may also have a draft-render script running (aiService.js).
+    if (job._draftsProc && job._draftsProc._proc) killProcessTree(job._draftsProc._proc);
     persist();
     return { ok: true };
   }

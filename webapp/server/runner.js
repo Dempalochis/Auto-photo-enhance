@@ -20,7 +20,9 @@ function runPowerShellScript(scriptPath, args, job, onLine, { powershellPath = '
     const psArgs = ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', scriptPath, ...args];
     console.log(`[${tag}] spawn: ${powershellPath} ${psArgs.map((a) => (/\s/.test(a) ? `"${a}"` : a)).join(' ')}`);
 
-    const proc = spawn(powershellPath, psArgs);
+    // Non-Windows (dev on Linux/macOS): own process group, so cancel can kill the script AND its
+    // rawtherapee-cli child (Windows does that with taskkill /T in jobQueue.cancelJob).
+    const proc = spawn(powershellPath, psArgs, { detached: process.platform !== 'win32' });
     // Exposed so jobQueue.cancelJob() can kill an active job's underlying process.
     job._proc = proc;
 

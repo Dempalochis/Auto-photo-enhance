@@ -65,7 +65,8 @@ function createRunProgressHandler(items, opts = {}) {
         if (current === item) current = null;
         break;
       case 'file_failed':
-        if (item) { item.status = 'failed'; if (evt.note) item.note = evt.note; }
+        // A cancelled file stays 'cancelled' even if the dying script still reports it.
+        if (item && item.status !== 'cancelled') { item.status = 'failed'; if (evt.note) item.note = evt.note; }
         if (current === item) current = null;
         break;
       case 'file_skipped':

@@ -358,3 +358,14 @@ Deliverables: `_development/Version_2_test_guide.md` (Windows checklist per feat
    change them after §11.
 5. **Embedded vs draft input** (§7.3), and whether `progressSource: "stdout"` is worth switching to (§2.2).
 6. Whether to merge `version_2_dev` after your test (no pull request was opened, as asked).
+
+## Browser test session (2026-11-24, after the build)
+
+The app was started the way `start_all.bat` does it (steps run by hand on Linux; a `.bat` can't execute
+here), driven in Chromium via Playwright, and timed. Full report: **`_development/v2_ui_test_report.md`**.
+Fixed: Version 1 font `@import` order (fonts never loaded); orphaned `rawtherapee-cli` after cancel on
+Linux/macOS (runs) and on all platforms (AI draft renders); **a cancel being counted as a failed attempt
+toward quarantine** (Linux); Merge ↓ direction in newest-first view; red 404s from the review panel;
+a wrong "llm disabled" note; a crowded scene header. Not changed, documented: one analyze lane, so an
+AI run can wait behind a review analysis (L2); `dramatic_mono` very dark on these samples (L3).
+Tests after the fixes: server 243/243, client 131/131, Pester 62/62.

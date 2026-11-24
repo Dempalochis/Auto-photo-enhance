@@ -21,6 +21,7 @@ const { autoScenesFromSegments } = require('./scenesStore');
 const { photoKey } = require('./correctionsCache');
 const { atomicWriteFileSync } = require('./atomicFile');
 const imageStats = require('./imageStats');
+const { killProcessTree } = require('./procTree');
 const { harmonizeScene } = require('./harmonize');
 const { boundarySystemPrompt, boundarySchema } = require('./llm/scenePrompt');
 
@@ -71,7 +72,7 @@ function createAiService({
           if (e.event === 'draft_failed') onDone(e.index, null, e.note);
         } catch { /* ignore malformed */ }
       }, psOpts).then(() => { fs.rm(listFile, { force: true }, () => {}); resolve(); }, reject);
-      if (signal) signal.addEventListener('abort', () => { try { if (sub._proc) sub._proc.kill(); } catch { /* best effort */ } }, { once: true });
+      if (signal) signal.addEventListener('abort', () => killProcessTree(sub._proc), { once: true });
     });
   }
 
@@ -298,7 +299,8 @@ function createAiService({
   async function refineScenes(plan, photos, job) {
     const codeScenes = autoScenesFromSegments(plan.segments);
     const useLlm = !(cfg.raw.scenes && cfg.raw.scenes.useLlm === false);
-    if (!useLlm || !llmCfg.enabled || plan.segments.length === 0) return { scenes: codeScenes, llm: useLlm ? 'off (llm disabled)' : 'off', notes: [] };
+    if (plan.segments.length === 0) return { scenes: codeScenes, llm: 'not needed (nothing to regroup)', notes: [] };
+    if (!useLlm || !llmCfg.enabled) return { scenes: codeScenes, llm: useLlm ? 'off (llm disabled)' : 'off', notes: [] };
     if (!(await available())) return { scenes: codeScenes, llm: 'unavailable', notes: [`LLM not available: ${(await llmHealth()).detail}`] };
 
     const byRel = Object.fromEntries(photos.map((p) => [p.relPath, p]));

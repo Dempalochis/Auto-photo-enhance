@@ -89,3 +89,12 @@ test('preview tiles: events first, regex fallback', () => {
   r.flush();
   assert.deepEqual(b.map((i) => i.status), ['failed', 'done']);
 });
+
+test('a file already marked cancelled stays cancelled when the dying script reports it failed', () => {
+  const it = items(1);
+  const h = createRunProgressHandler(it);
+  h.onLine(ev({ event: 'file_started', index: 0 }));
+  it[0].status = 'cancelled'; // what server.js onCancel does
+  h.onLine(ev({ event: 'file_failed', index: 0, note: 'exit 143' }));
+  assert.equal(it[0].status, 'cancelled');
+});

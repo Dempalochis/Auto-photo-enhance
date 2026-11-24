@@ -532,7 +532,9 @@ app.get('/api/corrections', asyncHandler(async (req, res) => {
   const photo = await photoForRel(req.query.path);
   if (!photo) return res.status(400).json({ error: 'invalid photo path' });
   const found = ai.lookupForReview(photo);
-  if (!found.plan) return res.status(404).json({ error: 'no plan for this photo yet - run Analyze first' });
+  // "Not analysed yet" is a normal answer, not an error (a 404 here made the browser console log
+  // a red error for every selected photo).
+  if (!found.plan) return res.json({ path: photo.relPath, plan: null, source: null });
   const img = ai.reviewImages(photo, found);
   const urlIf = (f) => (f && fs.existsSync(f) ? `/webapp-cache/corrections/drafts/${path.basename(f)}` : null);
   return res.json({

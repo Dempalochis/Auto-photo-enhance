@@ -20,6 +20,9 @@ const scenes = [
 test('pure helpers', () => {
   expect(nextSceneId(scenes, 'a')).toBe('b');
   expect(nextSceneId(scenes, 'b')).toBe(null);
+  // newest first (picker default): the scene below is the previous one in time
+  expect(nextSceneId(scenes, 'b', 'newest')).toBe('a');
+  expect(nextSceneId(scenes, 'a', 'newest')).toBe(null);
   expect(splitPointFor(scenes[1], new Set(['a1', 'a2']))).toBe('a2');
   expect(splitPointFor(scenes[1], new Set(['a3']))).toBe(null);
   expect(splitPointFor(scenes[1], new Set(['x']))).toBe(null);

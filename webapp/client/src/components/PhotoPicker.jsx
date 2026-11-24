@@ -378,7 +378,7 @@ export default function PhotoPicker({
                     selected={selected}
                     onSelectMany={onSelectMany}
                     onSceneSelected={onSceneSelected}
-                    actions={sceneActions ? sceneActions(row.group) : null}
+                    actions={sceneActions ? sceneActions(row.group, { sortOrder }) : null}
                   />
                 )}
                 {row.type === 'photos' && (
