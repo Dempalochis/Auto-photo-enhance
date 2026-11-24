@@ -25,4 +25,15 @@ function finalizeProgressItems(items, { cancelled }) {
   return items;
 }
 
-module.exports = { finalizeProgressItems };
+// Version 2 Phase 2: what a cancelled run must delete. Version 1: the in-flight file's (possibly
+// partial) final output. With batching also the in-flight batch's temp folder and its
+// stdout/stderr files - outputs are only moved to their final name once complete, so finished
+// files from the batch stay (same rule as Version 1: a finished file is fine).
+function cancelCleanupPaths({ currentOutput, batchTempDir }) {
+  const paths = [];
+  if (currentOutput) paths.push(currentOutput);
+  if (batchTempDir) paths.push(batchTempDir, `${batchTempDir}.stdout.txt`, `${batchTempDir}.stderr.txt`);
+  return paths;
+}
+
+module.exports = { finalizeProgressItems, cancelCleanupPaths };

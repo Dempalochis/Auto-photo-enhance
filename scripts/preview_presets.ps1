@@ -20,7 +20,8 @@
     on this RawTherapee build (a known bug, still true) so it used to give no benefit while still
     hurting quality - that's still correct for auto_enhance.ps1's production path, which does NOT
     use -f. It's fine here because quality doesn't matter for a preview grid, per its own purpose.
-  - `profiles/preview_fast_resize.pp3`: an explicit [Resize] pp3 override (Scale=0.15, confirmed
+  - `profiles/draft_override.pp3` (Version 2 Phase 1 rename of preview_fast_resize.pp3, shared
+    with the AI analysis draft renders): an explicit [Resize] pp3 override (Scale=0.15, confirmed
     via a real render that RawTherapee honors it correctly even under -f, ~6000x4000 -> ~900x600),
     stacked as the *last* -p layer so it can't be overridden by a preset (presets never touch
     [Resize] - see the main README's Presets section).
@@ -44,12 +45,18 @@ param(
     [string]$Profile,
     [Nullable[int]]$Quality,
     [string]$ConfigPath,
-    [int]$MaxConcurrency = 3
+    [int]$MaxConcurrency = 3,
+    # Version 2 Phase 1: also print "@@EVENT {...}" tile events (the web UI passes this).
+    [switch]$EmitEvents,
+    # Version 2 Phase 5: optional AI correction overlay for this photo -> an extra "00_ai_base" tile
+    # (base + AI overlay, no preset) next to "00_base_only". Without it: Version 1's tile set.
+    [string]$AiOverlay
 )
 
 $ErrorActionPreference = "Stop"
 . (Join-Path $PSScriptRoot "lib_common.ps1")
 $RepoRoot = Get-RepoRoot
+Enable-PipelineEvents $EmitEvents.IsPresent
 
 function Fail($message) {
     Write-Host "ERROR: $message" -ForegroundColor Red
@@ -98,29 +105,26 @@ New-Item -ItemType Directory -Force -Path $OutputDir | Out-Null
 # touch it, is what actually measured faster - a plain resize alone barely helped. Missing file
 # degrades gracefully (renders full quality/speed, same as before this change existed) rather
 # than failing the whole preview - this is a speed optimization, not a correctness requirement.
-$fastResizePp3 = Join-Path $RepoRoot "profiles\preview_fast_resize.pp3"
-$fastResizeAvailable = Test-Path -LiteralPath $fastResizePp3
-if (-not $fastResizeAvailable) {
-    Write-Host "NOTE: profiles\preview_fast_resize.pp3 not found - rendering at full quality/speed instead of the fast preview path." -ForegroundColor Yellow
+$draftOverride = Get-DraftOverridePath $RepoRoot
+if (-not $draftOverride) {
+    Write-Host "NOTE: profiles\draft_override.pp3 not found - rendering at full quality/speed instead of the fast preview path." -ForegroundColor Yellow
 }
+if ($AiOverlay -and -not (Test-Path -LiteralPath $AiOverlay)) { Fail "AI overlay not found: $AiOverlay" }
 
-function Build-RTArgs($label, $presetPath) {
+# One argument builder for every render mode (lib_common.ps1 Build-RTArgs): -f + draft override.
+function New-PreviewItem($label, $presetPath, $aiOverlayPath) {
     $outFile = Join-Path $OutputDir "$label.jpg"
-    $rtArgs = @()
-    if ($fastResizeAvailable) { $rtArgs += "-f" }
-    $rtArgs += @("-p", $base.ProfilePath)
-    if ($base.FormatOverlayPath) { $rtArgs += @("-p", $base.FormatOverlayPath) }
-    if ($presetPath) { $rtArgs += @("-p", $presetPath) }
-    if ($fastResizeAvailable) { $rtArgs += @("-p", $fastResizePp3) }
-    $rtArgs += @("-o", $outFile, "-j$Quality", "-Y", "-q", "-c", $sourceItem.FullName)
+    $rtArgs = Build-RTArgs -Mode draft -Base $base.ProfilePath -FormatOverlay $base.FormatOverlayPath -AiOverlay $aiOverlayPath `
+        -Preset $presetPath -DraftOverride $draftOverride -Inputs @($sourceItem.FullName) -Out $outFile -Quality $Quality
     return [pscustomobject]@{ Label = $label; OutFile = $outFile; Args = $rtArgs }
 }
 
 $renderItems = New-Object System.Collections.Generic.List[object]
-$renderItems.Add((Build-RTArgs "00_base_only" $null))
+$renderItems.Add((New-PreviewItem "00_base_only" $null $null))
+if ($AiOverlay) { $renderItems.Add((New-PreviewItem "00_ai_base" $null $AiOverlay)) }
 foreach ($p in $presetFiles) {
     $label = [System.IO.Path]::GetFileNameWithoutExtension($p.Name)
-    $renderItems.Add((Build-RTArgs $label $p.FullName))
+    $renderItems.Add((New-PreviewItem $label $p.FullName $null))
 }
 
 # Runs up to $MaxConcurrency RawTherapee processes at once instead of one at a time - see the
@@ -141,6 +145,7 @@ while ($queue.Count -gt 0 -or $active.Count -gt 0) {
         $stdoutFile = Join-Path $stdoutDir "$($item.Label).out.txt"
         $stderrFile = Join-Path $stdoutDir "$($item.Label).err.txt"
         Write-Host "Rendering $($item.Label)..."
+        Write-PipelineEvent "tile_started" @{ label = $item.Label }
         $proc = Start-Process -FilePath $RTPath -ArgumentList (ConvertTo-ArgLine $item.Args) -NoNewWindow -PassThru `
             -RedirectStandardOutput $stdoutFile -RedirectStandardError $stderrFile
         $active.Add([pscustomobject]@{ Process = $proc; Item = $item; StdoutFile = $stdoutFile; StderrFile = $stderrFile })
@@ -164,12 +169,14 @@ while ($queue.Count -gt 0 -or $active.Count -gt 0) {
             $ok = $outFileExists -and ($stdout -notmatch "Usage:")
             if ($ok) {
                 Write-Host "Rendered $($a.Item.Label)"
+                Write-PipelineEvent "tile_completed" @{ label = $a.Item.Label; file = "$($a.Item.Label).jpg" }
             } else {
                 # The web UI's server.js parses this exact "FAILED rendering <label> (" shape
                 # (see its onLine handler) - the parenthetical's content isn't parsed, only its
                 # presence is required, so it's free to carry a real reason instead of an exit code.
                 $reason = if (-not $outFileExists) { "no output file" } else { "RawTherapee printed its usage/help text instead of rendering" }
                 Write-Host "FAILED rendering $($a.Item.Label) ($reason)" -ForegroundColor Red
+                Write-PipelineEvent "tile_failed" @{ label = $a.Item.Label; note = $reason }
                 # The per-process stdout/stderr files are deleted below, so echo what RawTherapee
                 # actually said into this script's own stdout now - otherwise a caller (the web UI
                 # server, or someone reading the console) sees "no output file" with zero clue why.

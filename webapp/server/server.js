@@ -17,17 +17,19 @@ const {
   isSafeRelPath, resolvePhotoPath: resolvePhotoPathPure, cacheKeyFor, sanitizeProjectName, projectFolderName,
   outputFileFor,
 } = require('./pathSafety');
-const { finalizeProgressItems } = require('./runProgress');
+const { finalizeProgressItems, cancelCleanupPaths } = require('./runProgress');
 const { checkStartupConfig } = require('./startupChecks');
 const { checkDiskSpaceWarning } = require('./diskSpace');
 const { computeJobTiming } = require('./jobTiming');
 const { addToHistory } = require('./folderHistory');
 const { computeEtas } = require('./jobEta');
 const { canRetry, resolveRetryFiles } = require('./jobRetry');
-const { presetsFingerprint, isManifestFresh } = require('./previewCache');
+const { previewFingerprint, isPreviewManifestFresh } = require('./previewCache');
+const { createRunProgressHandler, createPreviewProgressHandler } = require('./runEvents');
 const { listProjects } = require('./projectBrowser');
 
 const cfg = loadConfig();
+const psOpts = { powershellPath: cfg.powershellPath };
 const app = express();
 app.use(express.json());
 
@@ -285,10 +287,16 @@ app.post('/api/preview', (req, res) => {
   const cacheDir = path.join(cfg.previewCacheDir, photoKey);
   const manifestPath = path.join(cacheDir, '_manifest.json');
   const currentPresets = listPresetNames();
-  // mtime+size per preset file, not just the name list - so editing a .pp3's contents in place
-  // (same filename) correctly invalidates this photo's cached grid instead of serving it stale
-  // forever (see previewCache.js).
-  const currentFingerprint = presetsFingerprint(cfg.presetsDir, currentPresets);
+  // Version 2 Phase 1: composite fingerprint (presets + every profile + the profile-choosing
+  // config fields + the source file), mtime+size each - see previewCache.js.
+  const currentFingerprint = previewFingerprint({
+    presetsDir: cfg.presetsDir,
+    presetNames: currentPresets,
+    profilesDir: cfg.profilesDir,
+    rawConfig: cfg.raw,
+    exiftoolPath: cfg.exiftoolPath,
+    sourceFile,
+  });
 
   const job = enqueue('preview', async (job) => {
     console.log(`[preview ${String(job.id).slice(0, 6)}] photo=${photo}`);
@@ -303,7 +311,7 @@ app.post('/api/preview', (req, res) => {
       // No cache yet, or an unreadable/corrupt manifest - isManifestFresh treats either as a
       // miss below, which just means a normal (re-)render, not a failure.
     }
-    const cached = isManifestFresh(existingManifest, currentFingerprint);
+    const cached = isPreviewManifestFresh(existingManifest, currentFingerprint);
     console.log(`[preview ${String(job.id).slice(0, 6)}]   cache      = ${cached ? 'HIT (serving existing tiles)' : 'MISS (rendering)'}`);
 
     const urlFor = (label) => `/webapp-cache/previews/${photoKey}/${label}.jpg`;
@@ -314,22 +322,13 @@ app.post('/api/preview', (req, res) => {
     };
 
     if (!cached) {
-      const args = ['-SourceFile', sourceFile, '-OutputDir', cacheDir, '-ConfigPath', cfg.configPath];
+      const args = ['-SourceFile', sourceFile, '-OutputDir', cacheDir, '-ConfigPath', cfg.configPath, '-EmitEvents'];
       const scriptPath = path.join(cfg.scriptsDir, 'preview_presets.ps1');
 
-      const { exitCode } = await runPowerShellScript(scriptPath, args, job, (line, job) => {
-        let m;
-        if ((m = line.match(/^Rendering (.+)\.\.\.$/))) {
-          const item = job.progress.items.find((i) => i.label === m[1]);
-          if (item) item.status = 'running';
-        } else if ((m = line.match(/^Rendered (.+)$/))) {
-          const item = job.progress.items.find((i) => i.label === m[1]);
-          if (item) { item.status = 'done'; item.url = urlFor(m[1]); }
-        } else if ((m = line.match(/^FAILED rendering (.+?) \(/))) {
-          const item = job.progress.items.find((i) => i.label === m[1]);
-          if (item) item.status = 'failed';
-        }
-      });
+      // Tile events first, Version 1 "Rendering/Rendered/FAILED rendering" lines as fallback.
+      const progress = createPreviewProgressHandler(job.progress.items, urlFor);
+      const { exitCode } = await runPowerShellScript(scriptPath, args, job, (line) => progress.onLine(line), psOpts);
+      progress.flush();
 
       const allOk = job.progress.items.every((i) => i.status === 'done');
       const doneCount = job.progress.items.filter((i) => i.status === 'done').length;
@@ -342,7 +341,7 @@ app.post('/api/preview', (req, res) => {
           + 'or the source photo is unreadable)');
       }
       if (allOk) {
-        fs.writeFileSync(manifestPath, JSON.stringify({ presetsFingerprint: currentFingerprint, generatedAt: Date.now() }));
+        fs.writeFileSync(manifestPath, JSON.stringify({ ...currentFingerprint, generatedAt: Date.now() }));
       } else if (exitCode !== 0) {
         // leave manifest absent so a retry re-renders; still return whatever succeeded below
       }
@@ -385,7 +384,7 @@ function queuedAheadPhotoCount() {
 // cleanup) - shared between a fresh POST /api/run and a POST /api/jobs/:id/retry, since both
 // queue exactly the same kind of work, just sourced from a fresh request vs. a job's saved meta.
 function makeRunJobFn({
-  files, absoluteFiles, outputDir, logDir, preset, photosRoot, folderName,
+  files, absoluteFiles, outputDir, logDir, preset, photosRoot, folderName, aiCorrection = false,
 }) {
   return async (job) => {
     job.progress = { total: files.length, items: files.map((relPath) => ({ name: relPath, status: 'pending' })) };
@@ -396,16 +395,23 @@ function makeRunJobFn({
       '-ConfigPath', cfg.configPath,
       '-PhotosRoot', photosRoot,
       '-FilesJson', JSON.stringify(absoluteFiles),
+      '-EmitEvents',
     ];
     if (preset && preset !== 'none') args.push('-Preset', preset);
 
     const scriptPath = path.join(cfg.scriptsDir, 'auto_enhance.ps1');
-    let summary = { processed: 0, skipped: 0, failed: 0, quarantined: 0 };
-
-    // Positional, not name-based: the script processes -FilesJson in the exact order given,
-    // so this stays correct even when two subfolders share a filename (name alone wouldn't).
-    let fileIndex = -1;
-    let current = null;
+    // Version 2 Phase 1: @@EVENT lines first (index = position in -FilesJson, so this stays
+    // correct when two subfolders share a filename), Version 1 regex parsing as the fallback.
+    let batchTempDir = null; // Phase 2: temp folder of the batch in flight (from batch_started)
+    const progress = createRunProgressHandler(job.progress.items, {
+      onEvent: (evt) => {
+        if (evt.event === 'batch_started') batchTempDir = evt.tempDir || null;
+        if (evt.event === 'file_started' && evt.output) {
+          const item = job.progress.items[evt.index];
+          if (item) item.output = evt.output;
+        }
+      },
+    });
     // Reads `current` at cancellation time (closure over the same `let`), not just at setup
     // time - always points at whichever file is actually in flight when Cancel is clicked.
     // Known race, observed during manual testing, considered acceptable: killing a process
@@ -417,29 +423,19 @@ function makeRunJobFn({
     // downside in the latter case is this job's own record calls that one file 'cancelled' even
     // though it's actually fine on disk - cosmetic, not a correctness problem.
     job.onCancel = () => {
-      if (current) {
-        const outFile = outputFileFor(outputDir, current.name, preset);
-        fs.rm(outFile, { force: true }, () => {});
-        current.status = 'cancelled';
-      }
+      const current = progress.current();
+      const targets = cancelCleanupPaths({
+        currentOutput: current ? (current.output || outputFileFor(outputDir, current.name, preset, { ai: aiCorrection })) : null,
+        batchTempDir,
+      });
+      for (const t of targets) fs.rm(t, { force: true, recursive: true }, () => {});
+      if (current) current.status = 'cancelled';
     };
-    const { exitCode } = await runPowerShellScript(scriptPath, args, job, (line, job) => {
-      let m;
-      if (line.match(/^Enhancing (.+?) \(/) || line.match(/^Skipping (.+?) \(/)) {
-        if (current && current.status === 'running') current.status = 'done';
-        fileIndex += 1;
-        current = job.progress.items[fileIndex] || null;
-        if (current) current.status = line.startsWith('Skipping') ? 'done' : 'running';
-        if (line.startsWith('Skipping')) current = null;
-      } else if (line.match(/^\s*FAILED: /)) {
-        if (current) current.status = 'failed';
-      } else if ((m = line.match(/^Processed: (\d+)\s+Skipped: (\d+)\s+Failed: (\d+)\s+Quarantined: (\d+)/))) {
-        summary = { processed: +m[1], skipped: +m[2], failed: +m[3], quarantined: +m[4] };
-      }
-    });
+    const { exitCode } = await runPowerShellScript(scriptPath, args, job, (line) => progress.onLine(line), psOpts);
+    progress.flush();
 
     finalizeProgressItems(job.progress.items, { cancelled: job.cancelRequested });
-    return { outputDir, folderName, exitCode, ...summary };
+    return { outputDir, folderName, exitCode, ...progress.summary() };
   };
 }
 

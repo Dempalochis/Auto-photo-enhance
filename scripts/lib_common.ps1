@@ -231,7 +231,221 @@ function Invoke-ExifTool([string]$ExiftoolPath, [string]$FilePath) {
   Start-Process for concurrent preview renders - a deliberately different pattern (see
   V7_PLAN.md Phase 3) left out of scope here.
 #>
-function Invoke-RawTherapee([string]$RTPath, [string[]]$RTArgs) {
-    $stdout = & $RTPath @RTArgs | Out-String
-    return [pscustomobject]@{ Stdout = $stdout; ExitCode = $LASTEXITCODE }
+function Invoke-RawTherapee([string]$RTPath, [string[]]$RTArgs, [scriptblock]$OnLine) {
+    # Version 2 Phase 1: stdout is read line by line (not buffered with Out-String) so a caller can
+    # react to each line as it arrives (-OnLine). The return shape is unchanged, so the Pester mocks
+    # keep working.
+    $sb = New-Object System.Text.StringBuilder
+    & $RTPath @RTArgs | ForEach-Object {
+        $line = "$_"
+        [void]$sb.AppendLine($line)
+        if ($OnLine) { & $OnLine $line }
+    }
+    return [pscustomobject]@{ Stdout = $sb.ToString(); ExitCode = $LASTEXITCODE }
+}
+
+<#
+  Version 2 Phase 1: the ONE place rawtherapee-cli arguments are built (plan principle 4), so final,
+  draft, preview and AI renders can't drift apart. The -p order is always:
+      base -> format overlay -> AI overlay -> preset -> (draft only) draft override
+  Draft mode adds -f (first, as preview_presets.ps1 always did) and the draft override last, so no
+  preset can override it. If no -DraftOverride is given (file missing), draft mode degrades to the
+  plain stack without -f, the same graceful fallback preview_presets.ps1 had in Version 1.
+  -Out is a file for single renders, or a folder for a multi-file batch (Phase 2).
+#>
+function Build-RTArgs {
+    param(
+        [ValidateSet("final", "draft")][string]$Mode = "final",
+        [Parameter(Mandatory = $true)][string]$Base,
+        [string]$FormatOverlay,
+        [string]$AiOverlay,
+        [string]$Preset,
+        [string]$DraftOverride,
+        [Parameter(Mandatory = $true)][string[]]$Inputs,
+        [Parameter(Mandatory = $true)][string]$Out,
+        [int]$Quality = 95
+    )
+    $isDraft = ($Mode -eq "draft") -and $DraftOverride
+    $a = @()
+    if ($isDraft) { $a += "-f" }
+    $a += @("-p", $Base)
+    if ($FormatOverlay) { $a += @("-p", $FormatOverlay) }
+    if ($AiOverlay) { $a += @("-p", $AiOverlay) }
+    if ($Preset) { $a += @("-p", $Preset) }
+    if ($isDraft) { $a += @("-p", $DraftOverride) }
+    $a += @("-o", $Out, "-j$Quality", "-Y", "-q", "-c")
+    $a += $Inputs
+    return , $a
+}
+
+# The ordered -p list of an argument array (used for batch signatures, Phase 2).
+function Get-RTProfileStack([string[]]$RTArgs) {
+    $stack = @()
+    for ($i = 0; $i -lt $RTArgs.Count - 1; $i++) { if ($RTArgs[$i] -eq "-p") { $stack += $RTArgs[$i + 1] } }
+    return , $stack
+}
+
+# Draft override profile (Phase 1 rename of preview_fast_resize.pp3), or $null when missing.
+function Get-DraftOverridePath([string]$RepoRoot) {
+    $p = Join-Path $RepoRoot "profiles\draft_override.pp3"
+    if (Test-Path -LiteralPath $p) { return $p }
+    return $null
+}
+
+<#
+  Version 2 Phase 1: structured progress line, printed NEXT TO the human-readable output (never
+  instead of it) and only when the caller asked for events (-EmitEvents; the web UI does, the .bat
+  CLI doesn't, so its console output stays exactly as in Version 1). Shape:
+    @@EVENT {"event":"file_started","file":"C:\\x.ARW","index":0,"total":3,"note":""}
+#>
+$script:PipelineEventsEnabled = $false
+function Enable-PipelineEvents([bool]$Enabled) { $script:PipelineEventsEnabled = $Enabled }
+function Write-PipelineEvent([string]$Event, [hashtable]$Fields) {
+    if (-not $script:PipelineEventsEnabled) { return }
+    $o = [ordered]@{ event = $Event }
+    if ($Fields) { foreach ($k in $Fields.Keys) { $o[$k] = $Fields[$k] } }
+    Write-Host ("@@EVENT " + (ConvertTo-Json -InputObject $o -Compress -Depth 4))
+}
+
+# ======================= Version 2 Phase 2: batched rendering =======================
+
+# One correctly quoted command-line string (same rule as preview_presets.ps1's ConvertTo-ArgLine;
+# none of our arguments end in a backslash, so a plain wrapping quote is sufficient).
+function ConvertTo-RTArgLine([string[]]$Argv) {
+    ($Argv | ForEach-Object { if ($_ -match '\s') { '"' + $_ + '"' } else { $_ } }) -join ' '
+}
+
+# Files can share one rawtherapee-cli call only if everything except the inputs is identical:
+# the ordered -p list, the output subfolder and the render mode.
+function Get-BatchSignature([string[]]$ProfileStack, [string]$OutSubdir, [string]$Mode) {
+    return (@($Mode, $OutSubdir.ToLowerInvariant()) + @($ProfileStack | ForEach-Object { $_.ToLowerInvariant() })) -join "|"
+}
+
+<#
+  Groups jobs by .Signature (first-appearance order kept), then closes a batch and starts a new
+  one for the same signature as soon as any limit is reached:
+    - unique stems: at most one file per GetFileNameWithoutExtension (case-insensitive), since
+      RawTherapee names temp outputs <stem>.jpg; a duplicate moves to the next batch;
+    - file count: -MaxBatchSize;
+    - command-line length: the full quoted argument string (what CreateProcess sees) must stay
+      under -MaxCommandChars.
+  -ArgsFor { param($jobsInBatch, $tempDir) -> string[] } builds the real arguments.
+  Returns a list of batches (each an array of jobs).
+#>
+function Split-IntoBatches {
+    param($Jobs, [int]$MaxBatchSize = 20, [int]$MaxCommandChars = 16000, [string]$RTPath = "rawtherapee-cli",
+        [scriptblock]$ArgsFor, [scriptblock]$TempDirFor)
+    $groups = New-Object System.Collections.Specialized.OrderedDictionary
+    foreach ($j in $Jobs) {
+        if (-not $groups.Contains($j.Signature)) { $groups[$j.Signature] = New-Object System.Collections.Generic.List[object] }
+        $groups[$j.Signature].Add($j)
+    }
+    $result = New-Object System.Collections.Generic.List[object]
+    foreach ($sig in $groups.Keys) {
+        $pending = New-Object System.Collections.Generic.List[object]
+        foreach ($j in $groups[$sig]) { $pending.Add($j) }
+        while ($pending.Count -gt 0) {
+            $batch = New-Object System.Collections.Generic.List[object]
+            $stems = @{}
+            $rest = New-Object System.Collections.Generic.List[object]
+            foreach ($j in $pending) {
+                $stem = [System.IO.Path]::GetFileNameWithoutExtension($j.Arw.Name).ToLowerInvariant()
+                if ($batch.Count -ge $MaxBatchSize -or $stems.ContainsKey($stem)) { $rest.Add($j); continue }
+                if ($batch.Count -gt 0 -and $ArgsFor) {
+                    $tmp = if ($TempDirFor) { & $TempDirFor $batch[0] } else { "tmp" }
+                    $candidate = [object[]]($batch.ToArray()) + @($j)
+                    $len = $RTPath.Length + 3 + (ConvertTo-RTArgLine (& $ArgsFor $candidate $tmp)).Length
+                    if ($len -gt $MaxCommandChars) { $rest.Add($j); continue }
+                }
+                $batch.Add($j)
+                $stems[$stem] = $true
+            }
+            $result.Add($batch.ToArray())
+            $pending = $rest
+        }
+    }
+    return , $result.ToArray()
+}
+
+<#
+  Which of -Stems have a finished <stem>.jpg in -TempDir. A file counts as finished when its size
+  is > 0 and unchanged since the previous poll (-State remembers sizes) AND it can be opened for
+  exclusive access (RawTherapee's write handle is closed). -Final (the process has exited) skips
+  the size-stable wait, so nothing is lost if polling missed a file. -MinStableSeen lets the
+  caller require more consecutive unchanged polls. Returns the newly finished stems, input order.
+#>
+function Get-ReadyBatchOutputs([string]$TempDir, [string[]]$Stems, [hashtable]$State, [switch]$Final, [int]$MinStableSeen = 1) {
+    $ready = @()
+    foreach ($stem in $Stems) {
+        $key = $stem.ToLowerInvariant()
+        if ($State.ContainsKey("done:$key")) { continue }
+        $path = Join-Path $TempDir "$stem.jpg"
+        if (-not (Test-Path -LiteralPath $path)) { continue }
+        $size = (Get-Item -LiteralPath $path).Length
+        if ($size -le 0) { continue }
+        $prev = $State["size:$key"]
+        $seen = if ($null -ne $prev -and $prev -eq $size) { [int]$State["seen:$key"] + 1 } else { 0 }
+        $State["size:$key"] = $size
+        $State["seen:$key"] = $seen
+        if (-not $Final -and $seen -lt $MinStableSeen) { continue }
+        if (-not (Test-FileUnlocked $path)) { continue }
+        $State["done:$key"] = $true
+        $ready += $stem
+    }
+    return , $ready
+}
+
+function Test-FileUnlocked([string]$Path) {
+    try {
+        $fs = [System.IO.File]::Open($Path, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, [System.IO.FileShare]::None)
+        $fs.Close()
+        return $true
+    } catch {
+        return $false
+    }
+}
+
+<#
+  Runs ONE rawtherapee-cli call for a whole batch (-Out = -TempDir) and calls -OnFileReady <stem>
+  as each output finishes. Progress source (Phase 0 decision, config.progressSource):
+    outputFolder (default): poll -TempDir every -PollMs; see Get-ReadyBatchOutputs.
+    stdout: a "Processing: <next file>" line means the previous files are written; the lock check
+            still applies. Falls back to the folder rule at exit.
+  stdout/stderr go to files next to the temp folder (no pipe that could fill up and block).
+  Returns { ExitCode, Stdout }. The exit code is informational only: per-file success is decided
+  by which outputs exist (fault isolation in auto_enhance.ps1).
+#>
+function Invoke-RawTherapeeBatch {
+    param([string]$RTPath, [string[]]$RTArgs, [string]$TempDir, [string[]]$Stems,
+        [string]$ProgressSource = "outputFolder", [scriptblock]$OnFileReady, [int]$PollMs = 250)
+    $stdoutFile = "$TempDir.stdout.txt"
+    $stderrFile = "$TempDir.stderr.txt"
+    $proc = Start-Process -FilePath $RTPath -ArgumentList (ConvertTo-RTArgLine $RTArgs) -NoNewWindow -PassThru `
+        -RedirectStandardOutput $stdoutFile -RedirectStandardError $stderrFile
+    $state = @{}
+    $processingSeen = 0
+    while (-not $proc.HasExited) {
+        Start-Sleep -Milliseconds $PollMs
+        if ($ProgressSource -eq "stdout") {
+            $text = ""
+            try { $text = [System.IO.File]::ReadAllText($stdoutFile) } catch { $text = "" }
+            $n = ([regex]::Matches($text, '(?m)^Processing: ')).Count
+            if ($n -gt $processingSeen) {
+                $processingSeen = $n
+                # Files before the one now "Processing" are written: accept them without the
+                # size-stable wait (still lock-checked).
+                $upTo = [math]::Min($Stems.Count, $n - 1)
+                if ($upTo -gt 0) {
+                    foreach ($stem in (Get-ReadyBatchOutputs -TempDir $TempDir -Stems $Stems[0..($upTo - 1)] -State $state -Final)) { & $OnFileReady $stem }
+                }
+            }
+        } else {
+            foreach ($stem in (Get-ReadyBatchOutputs -TempDir $TempDir -Stems $Stems -State $state)) { & $OnFileReady $stem }
+        }
+    }
+    $proc.WaitForExit()
+    foreach ($stem in (Get-ReadyBatchOutputs -TempDir $TempDir -Stems $Stems -State $state -Final)) { & $OnFileReady $stem }
+    $out = ""
+    try { $out = [System.IO.File]::ReadAllText($stdoutFile) } catch { $out = "" }
+    return [pscustomobject]@{ ExitCode = $proc.ExitCode; Stdout = $out }
 }

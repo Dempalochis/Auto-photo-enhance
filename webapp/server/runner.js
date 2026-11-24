@@ -14,13 +14,13 @@ const { appendLog } = require('./jobQueue');
 // shows the actual PowerShell error (bad rtPath, missing ExifTool, unreadable source file, ...)
 // without needing to poke at /api/jobs/:id by hand. The spawn invocation and final exit code
 // are logged too, so a copy-pasteable repro of exactly what was run is always in the console.
-function runPowerShellScript(scriptPath, args, job, onLine) {
+function runPowerShellScript(scriptPath, args, job, onLine, { powershellPath = 'powershell.exe' } = {}) {
   return new Promise((resolve, reject) => {
     const tag = `${path.basename(scriptPath)} ${String(job.id).slice(0, 6)}`;
     const psArgs = ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', scriptPath, ...args];
-    console.log(`[${tag}] spawn: powershell.exe ${psArgs.map((a) => (/\s/.test(a) ? `"${a}"` : a)).join(' ')}`);
+    console.log(`[${tag}] spawn: ${powershellPath} ${psArgs.map((a) => (/\s/.test(a) ? `"${a}"` : a)).join(' ')}`);
 
-    const proc = spawn('powershell.exe', psArgs);
+    const proc = spawn(powershellPath, psArgs);
     // Exposed so jobQueue.cancelJob() can kill an active job's underlying process.
     job._proc = proc;
 
@@ -41,7 +41,7 @@ function runPowerShellScript(scriptPath, args, job, onLine) {
     proc.stderr.on('data', handleChunk('stderr'));
     proc.on('error', (err) => {
       job._proc = null;
-      console.error(`[${tag}] failed to spawn powershell.exe: ${err.message}`);
+      console.error(`[${tag}] failed to spawn ${powershellPath}: ${err.message}`);
       reject(err);
     });
     proc.on('close', (exitCode) => {

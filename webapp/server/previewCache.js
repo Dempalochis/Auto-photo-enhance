@@ -35,3 +35,64 @@ function isManifestFresh(manifest, currentFingerprint) {
 }
 
 module.exports = { presetsFingerprint, isManifestFresh };
+
+// ---- Version 2 Phase 1: composite fingerprint over EVERY input a preview tile is rendered from ----
+// Version 1 fingerprinted only the presets, so editing a base profile, a format overlay, the draft
+// profile, the profile settings in config.json, or replacing the source raw under the same name
+// kept serving stale tiles (a known Version 1 bug). Every input is still mtime + size only (no
+// file contents read). Old manifests (no `version: 2`) count as stale: a one-time re-render.
+const PREVIEW_MANIFEST_VERSION = 2;
+
+function statEntry(file) {
+  try {
+    const st = fs.statSync(file);
+    return { mtimeMs: st.mtimeMs, size: st.size };
+  } catch {
+    return { mtimeMs: null, size: null };
+  }
+}
+
+function profilesFingerprint(profilesDir) {
+  let names = [];
+  try {
+    names = fs.readdirSync(profilesDir).filter((f) => f.toLowerCase().endsWith('.pp3')).sort();
+  } catch {
+    names = [];
+  }
+  return names.map((name) => ({ name, ...statEntry(path.join(profilesDir, name)) }));
+}
+
+// The config.json fields that decide which profile Get-BaseProfileForFile picks.
+function profileConfigFingerprint(rawConfig, exiftoolPath) {
+  const c = rawConfig || {};
+  return {
+    defaultProfile: c.defaultProfile ?? null,
+    autoProfile: c.autoProfile ? JSON.parse(JSON.stringify(c.autoProfile)) : null,
+    exiftoolPresent: Boolean(exiftoolPath && fs.existsSync(exiftoolPath)),
+  };
+}
+
+function previewFingerprint({
+  presetsDir, presetNames, profilesDir, rawConfig, exiftoolPath, sourceFile, aiOverlayHash = null,
+}) {
+  return {
+    version: PREVIEW_MANIFEST_VERSION,
+    inputs: {
+      presets: presetsFingerprint(presetsDir, presetNames),
+      profiles: profilesFingerprint(profilesDir),
+      config: profileConfigFingerprint(rawConfig, exiftoolPath),
+      source: statEntry(sourceFile),
+      aiOverlay: aiOverlayHash,
+    },
+  };
+}
+
+function isPreviewManifestFresh(manifest, current) {
+  if (!manifest || manifest.version !== PREVIEW_MANIFEST_VERSION || !manifest.inputs) return false;
+  return JSON.stringify(manifest.inputs) === JSON.stringify(current.inputs);
+}
+
+module.exports.PREVIEW_MANIFEST_VERSION = PREVIEW_MANIFEST_VERSION;
+module.exports.previewFingerprint = previewFingerprint;
+module.exports.isPreviewManifestFresh = isPreviewManifestFresh;
+module.exports.profilesFingerprint = profilesFingerprint;

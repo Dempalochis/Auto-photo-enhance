@@ -14,6 +14,12 @@ function loadConfig() {
     return path.isAbsolute(p) ? p : path.join(REPO_ROOT, p);
   };
   return {
+    // Version 2: the raw config.json object, for the PowerShell-side settings Node mirrors
+    // (profile choice for the preview fingerprint and the AI overlay base values).
+    raw,
+    // Version 2: which PowerShell runs the scripts. Default = Version 1's "powershell.exe"
+    // (Windows PowerShell 5.1); "pwsh" works too (PowerShell 7, also on Linux for development).
+    powershellPath: raw.powershellPath || 'powershell.exe',
     repoRoot: REPO_ROOT,
     configPath: CONFIG_PATH,
     rtPath: raw.rtPath || 'C:\\Program Files\\RawTherapee\\5.12\\rawtherapee-cli.exe',

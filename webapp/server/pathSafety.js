@@ -9,7 +9,10 @@ const { RAW_FILE_PATTERN } = require('./rawFormats');
 
 function isSafeRelPath(relPath) {
   if (typeof relPath !== 'string' || relPath.length === 0) return false;
-  if (path.isAbsolute(relPath)) return false;
+  // Both flavours: on Windows path.isAbsolute already is the win32 check (which also rejects
+  // "/etc/x"), so this is a no-op there; on a POSIX dev/CI box it additionally rejects
+  // "C:\\x" style paths, keeping the security rule identical on every platform.
+  if (path.win32.isAbsolute(relPath) || path.posix.isAbsolute(relPath)) return false;
   if (!RAW_FILE_PATTERN.test(relPath)) return false;
   const segments = relPath.split(/[\\/]/);
   if (segments.some((s) => s === '..' || s === '.' || s === '')) return false;
@@ -20,7 +23,9 @@ function isSafeRelPath(relPath) {
 // (defense in depth beyond isSafeRelPath's textual check). Returns null if it escapes.
 function resolvePhotoPath(rootDir, relPath) {
   const rootResolved = path.resolve(rootDir);
-  const resolved = path.resolve(rootDir, relPath);
+  // relPaths may use either separator; Windows path.resolve already treats '\\' as one, so
+  // normalising to '/' changes nothing there, and makes POSIX treat it the same way.
+  const resolved = path.resolve(rootDir, String(relPath).replace(/\\/g, '/'));
   if (resolved !== rootResolved && !resolved.startsWith(rootResolved + path.sep)) return null;
   return resolved;
 }
@@ -46,9 +51,11 @@ function projectFolderName(projectName, dateStr = new Date().toISOString().slice
 // run of this project. No preset (or 'none') keeps the original base name, unchanged from before
 // presets existed; a selected preset appends "_<preset>" so different looks of the same source
 // photo don't collide/overwrite each other in the output folder.
-function outputFileFor(outputDir, relPath, preset) {
+// Version 2 Phase 4: AI-corrected runs add "_ai" before the preset suffix (<name>_ai[_<preset>]).
+function outputFileFor(outputDir, relPath, preset, { ai = false } = {}) {
   const relDir = path.posix.dirname(relPath); // '.' for a top-level file
-  const base = path.posix.basename(relPath, path.posix.extname(relPath));
+  const stem = path.posix.basename(relPath, path.posix.extname(relPath));
+  const base = ai ? `${stem}_ai` : stem;
   const outBase = preset && preset !== 'none' ? `${base}_${preset}` : base;
   return relDir === '.' ? path.join(outputDir, `${outBase}.jpg`) : path.join(outputDir, relDir, `${outBase}.jpg`);
 }

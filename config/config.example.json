@@ -12,5 +12,9 @@
     "highIsoProfile": "lowlight"
   },
   "quarantineAfterFailures": 2,
-  "preset": null
+  "preset": null,
+  "batchRender": false,
+  "maxBatchSize": 20,
+  "maxCommandChars": 16000,
+  "progressSource": "outputFolder"
 }
