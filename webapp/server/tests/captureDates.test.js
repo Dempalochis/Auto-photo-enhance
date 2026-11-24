@@ -44,3 +44,26 @@ test('makeBatches puts a single file longer than the char cap in its own batch r
   assert.equal(batches[0][0], hugePath);
   assert.deepEqual(batches.flat(), files);
 });
+
+// ---- Version 2, Phase 3: extended metadata read ----
+const { parseExifEntry } = require('../captureDates');
+
+test('parseExifEntry reads the -n numeric fields and keeps the date format', () => {
+  const m = parseExifEntry({
+    SourceFile: 'a.ARW', DateTimeOriginal: '2017:07:13 16:58:20', ISO: 400, ExposureTime: 0.004, FNumber: 4, Flash: 16, Model: 'ILCE-7S ',
+  });
+  assert.deepEqual(m, {
+    dateTaken: '2017-07-13T16:58:20', iso: 400, exposureTime: 0.004, fNumber: 4, flash: false, model: 'ILCE-7S',
+  });
+});
+
+test('parseExifEntry: flash bit 0 means fired; FNumber 0 / missing fields become null', () => {
+  const m = parseExifEntry({ DateTimeOriginal: '2017:01:15 21:38:27', ISO: 100, FNumber: 0, Flash: 15 });
+  assert.equal(m.flash, true);
+  assert.equal(m.fNumber, null);
+  assert.equal(m.exposureTime, null);
+  assert.equal(m.model, null);
+  assert.equal(parseExifEntry({ Flash: 'On, Did not fire' }).flash, false);
+  assert.equal(parseExifEntry({ Flash: 'Fired' }).flash, true);
+  assert.equal(parseExifEntry({}).flash, null);
+});

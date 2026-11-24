@@ -33,9 +33,36 @@ function makeBatches(filePaths) {
   return batches;
 }
 
-function getCaptureDatesBatch(exiftoolPath, filePaths) {
+// Version 2 (Phase 3): the same batched call also reads the exposure fields scene segmentation
+// needs. `-n` returns them as plain numbers (ExposureTime in seconds, Flash as the EXIF bitfield)
+// and leaves DateTimeOriginal's text format unchanged, so date parsing is unaffected.
+const METADATA_TAGS = ['-DateTimeOriginal', '-ISO', '-ExposureTime', '-FNumber', '-Flash', '-Model'];
+
+function num(v) {
+  const n = typeof v === 'number' ? v : parseFloat(v);
+  return Number.isFinite(n) && n > 0 ? n : null;
+}
+
+// Pure: one exiftool -j -n entry -> the metadata shape the app uses. FNumber 0 (manual lens) and
+// missing values become null rather than 0, so EV maths can tell "unknown" from "dark".
+function parseExifEntry(entry) {
+  const flashRaw = entry && entry.Flash;
+  let flash = null;
+  if (typeof flashRaw === 'number') flash = (flashRaw & 1) === 1;
+  else if (typeof flashRaw === 'string' && flashRaw) flash = /fired/i.test(flashRaw) && !/did not fire|not fired/i.test(flashRaw);
+  return {
+    dateTaken: parseExifDate(entry && entry.DateTimeOriginal),
+    iso: num(entry && entry.ISO),
+    exposureTime: num(entry && entry.ExposureTime),
+    fNumber: num(entry && entry.FNumber),
+    flash,
+    model: entry && entry.Model ? String(entry.Model).trim() : null,
+  };
+}
+
+function getMetadataBatch(exiftoolPath, filePaths) {
   return new Promise((resolve) => {
-    const proc = spawn(exiftoolPath, ['-j', '-DateTimeOriginal', ...filePaths]);
+    const proc = spawn(exiftoolPath, ['-j', '-n', ...METADATA_TAGS, ...filePaths]);
     let out = '';
     proc.stdout.on('data', (d) => { out += d.toString(); });
     proc.on('error', () => resolve({}));
@@ -44,7 +71,7 @@ function getCaptureDatesBatch(exiftoolPath, filePaths) {
         const arr = JSON.parse(out);
         const map = {};
         for (const entry of arr) {
-          map[path.resolve(entry.SourceFile)] = parseExifDate(entry.DateTimeOriginal);
+          map[path.resolve(entry.SourceFile)] = parseExifEntry(entry);
         }
         resolve(map);
       } catch {
@@ -72,11 +99,22 @@ async function runWithConcurrency(batches, worker, limit) {
 
 // Falls back to filesystem mtime (passed in by the caller) when EXIF has no DateTimeOriginal.
 // Keyed by resolved absolute path, not bare filename - subfolders can have same-named files.
-async function getCaptureDates(exiftoolPath, filePaths) {
+// Returns { [absPath]: { dateTaken, iso, exposureTime, fNumber, flash, model } }.
+async function getPhotoMetadata(exiftoolPath, filePaths) {
   if (!exiftoolPath || filePaths.length === 0) return {};
   const batches = makeBatches(filePaths);
-  const batchResults = await runWithConcurrency(batches, (batch) => getCaptureDatesBatch(exiftoolPath, batch), 4);
+  const batchResults = await runWithConcurrency(batches, (batch) => getMetadataBatch(exiftoolPath, batch), 4);
   return Object.assign({}, ...batchResults);
 }
 
-module.exports = { getCaptureDates, makeBatches };
+// Unchanged contract from Version 1: { [absPath]: 'YYYY-MM-DDTHH:MM:SS' | null }.
+async function getCaptureDates(exiftoolPath, filePaths) {
+  const meta = await getPhotoMetadata(exiftoolPath, filePaths);
+  const out = {};
+  for (const [k, v] of Object.entries(meta)) out[k] = v.dateTaken;
+  return out;
+}
+
+module.exports = {
+  getCaptureDates, getPhotoMetadata, parseExifEntry, parseExifDate, makeBatches,
+};

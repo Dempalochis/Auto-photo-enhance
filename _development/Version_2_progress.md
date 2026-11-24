@@ -6,9 +6,9 @@ One entry per phase: what was done, what was skipped and why, deviations from th
 | Phase | Status |
 |---|---|
 | Planning | ✅ done — plan, Version 1 record, LLM design committed (2026-11-24) |
-| 0a Measure tooling + Linux behaviour checks | ⬜ not started |
-| 1 Pipeline foundations | ⬜ not started |
-| 2 Batched rendering + fault isolation | ⬜ not started |
+| 0a Measure tooling + Linux behaviour checks | ✅ done (2026-11-24) |
+| 1 Pipeline foundations | ✅ done (2026-11-24) |
+| 2 Batched rendering + fault isolation | ✅ built, **off by default** (Linux gate: NO-GO) |
 | 3 Scene grouping (no LLM) | ⬜ not started |
 | 4 LLM core + AI correction | ⬜ not started |
 | 5 LLM scenes + review UI | ⬜ not started |
@@ -24,3 +24,125 @@ One entry per phase: what was done, what was skipped and why, deviations from th
   once. The npm registry was still unreachable from the old machine, which keeps its earlier rules
   until it is replaced. Start dev sessions in that environment. The first dev session verifies what
   installs, and once that works, saves the install steps as the environment's setup script.
+
+- 2026-11-24 (dev session 1): installed and verified in the new `auto-photo-enhance` environment:
+
+  | Tool | Result |
+  |---|---|
+  | Node 22 + `npm install` | ✅ (root postinstall installs server + client) |
+  | PowerShell 7.4.6 (`pwsh`) | ✅ from the GitHub release `.deb` |
+  | Pester 5.7.1 | ✅ from **nuget.org** (`api.nuget.org/v3-flatcontainer/pester/…`). PowerShell Gallery is blocked (403), so `Install-Module` can't work |
+  | RawTherapee CLI | ✅ **5.10** (Ubuntu apt). Windows has 5.12 |
+  | ExifTool | ✅ 12.76 (apt) |
+  | CC0 samples | ✅ 8 files in `_samples/` (6 ARW, 1 RAF, 1 NEF, all ISO ≤ 400) from raw.pixls.us |
+  | Ollama | ✅ 0.40.18 (`ollama-linux-amd64.tar.zst`, not `.tgz` which is 404 now) + `qwen3.5:2b` (2.7 GB). 4B/9B not pulled: CPU only |
+  | ImageMagick | was preinstalled; used only for dev-side colour measurements |
+
+  **Baseline before any change:** Pester 24/24, client 105/105, server 159 pass / **2 fail** / 3
+  skipped. The two failures were Linux-only: `pathSafety.test.js` uses Windows paths and Node's
+  `path` follows POSIX rules on Linux. Fixed in production code without changing Windows behaviour
+  (`isSafeRelPath` rejects both win32- and posix-absolute paths, and `resolvePhotoPath` treats `\` as a
+  separator, which is a no-op on Windows). Now green.
+
+  The install steps are saved as the environment's **setup script** (runs on fresh containers).
+  It starts in the folder above the checkout: apt packages, pwsh, Pester, the Ollama binary,
+  `npm install`, samples. It doesn't pull a model (needs `ollama serve` running). Run
+  `ollama serve & ollama pull qwen3.5:2b` by hand. The script is proven step by step in this session,
+  but not yet on a fresh container.
+  pwsh sends telemetry to a blocked host. Set `POWERSHELL_TELEMETRY_OPTOUT=1` to keep the proxy log quiet.
+
+---
+
+## Phase 0a: measure tooling + Linux behaviour checks ✅
+
+Done:
+- `scripts/bench_rt.ps1`: cases A–F + X (behaviour), median of N runs, `results.json` + `results.md`,
+  gate verdicts printed at the end. PS 5.1 compatible. `-Cases A,C` works through `-File`.
+- `scripts/dev/` (Node, dev-only, no new dependencies): `step_calibration.js` (single-step grid
+  per photo), `llm_experiment.js` (before/after HTML page + input-image agreement),
+  `scene_report.js` (time/EXIF segments with thumbnails), `devlib.js`.
+- Ran everything on Linux. Results and verdicts in **`_development/v2_benchmark_findings.md`**
+  (labelled not-Windows). Summary: batching NO-GO (0.2 %), keep draft D, render-limiter best at 2,
+  stdout live on Linux, `TemperatureBias` warmth has no effect (→ `Equal`), tint sign inverted,
+  `qwen3.5:2b` too weak to judge anything.
+
+Deviations:
+- **The LLM core modules were built in 0a, not 4**, because the experiment script needs them:
+  `pp3.js`, `correctionTable.js`, `correctionPlan.js`, `correctionToPp3.js`, `baseProfile.js`,
+  `llm/` (schema, prompt, provider interface, Ollama + mock adapters), plus `sceneSegmenter.js` and
+  the extended ExifTool read (`captureDates.js` `getPhotoMetadata`) for the scene report (Phase 3
+  task 1–2). All unit-tested. Phases 3/4 wire them into the app.
+- **Warmth step changed** from `[White Balance] TemperatureBias` (measured: no effect with auto-ITC)
+  to `[White Balance] Equal`. **Tint sign flipped** (higher `Green` = greener). Measured, see findings.
+- 30–50-photo LLM run and real-shoot scene comparison: **not possible here** (no photo library, CPU
+  only). Moved to Phase 0b (test guide).
+
+## Phase 1: pipeline foundations ✅
+
+Done:
+- `Build-RTArgs -Mode final|draft` in `lib_common.ps1` is now the only argument builder:
+  `auto_enhance.ps1`, `preview_presets.ps1`, the batch path and the contract tests use it. Stack
+  order base → format → AI → preset → (draft) draft override. Draft without an override file
+  falls back to the plain stack (Version 1's graceful fallback).
+- `profiles/preview_fast_resize.pp3` **renamed** (git mv, content unchanged) to
+  `profiles/draft_override.pp3`. Phase 0a kept variant D.
+- Composite preview-cache fingerprint (`previewCache.js` `previewFingerprint`): presets + all
+  `profiles/*.pp3` + `defaultProfile`/`autoProfile`/exiftool-present + source size/mtime + (Phase 5)
+  AI overlay hash. Manifest `{ version: 2, inputs }`. Old manifests count as stale. Fixes the
+  Version 1 stale-tile bug. Checked live: HIT on repeat, MISS after touching `lowlight.pp3`.
+- `Invoke-RawTherapee` streams stdout line by line (`-OnLine`), same return shape.
+- `@@EVENT {...}` lines: `file_started/completed/failed/skipped`, `summary`
+  (auto_enhance), `tile_started/completed/failed` (preview).
+- Node: `runEvents.js` (events first, Version 1 regex fallback; a human line is held for one line
+  so it is never double-counted), used by `/api/run` and `/api/preview`.
+- `config.powershellPath` (default `powershell.exe` = Version 1). Lets the server run the scripts with
+  `pwsh` (used here on Linux). Checked live end to end: a run and a 33-tile preview through the
+  real server + pwsh + RawTherapee, progress driven by events.
+- Tests: Pester `rtArgsBuilder.Tests.ps1`, `pipelineEvents.Tests.ps1`, `integration/rtContract.Tests.ps1`
+  (tag `Integration`, skips without RawTherapee/samples, ran for real here). Node `runEvents.test.js`,
+  `previewFingerprint.test.js`, `config.test.js`.
+- Byte-identity spot check against the Version 1 scripts (`git show HEAD:`) on the same inputs:
+  console output identical, ARW output byte-identical; the RAF differs only because RawTherapee's
+  X-Trans output isn't deterministic (three identical calls → three checksums).
+
+Deviations:
+- **Events are printed only with `-EmitEvents`** (the server always passes it). The plan said
+  "next to the existing lines". The switch keeps the `.bat` console output exactly as in
+  Version 1 (§9.4 "byte-identical").
+- Found while testing live: my `config.js` edit had dropped `repoRoot`, and the server's
+  `uncaughtException` handler swallowed the boot error, so the test suite still passed. Fixed, and
+  `config.test.js` now pins the core config paths.
+
+## Phase 2: batched rendering + fault isolation ✅ (off by default)
+
+Done (all in `auto_enhance.ps1` + `lib_common.ps1`, only when `config.batchRender: true` or
+`-BatchRender true`):
+- Skip check first, then signature = ordered `-p` list + output subfolder + mode (`Get-BatchSignature`).
+- `Split-IntoBatches`: unique stems (case-insensitive), `maxBatchSize` (20), `maxCommandChars`
+  (16000, measured on the real quoted argument string).
+- One call per batch into `<out>/.rt_batch_<guid>/`, outputs moved to their final names as they finish.
+  Progress from `progressSource`: `outputFolder` (default; 250 ms poll, size-stable + exclusive-open
+  check) or `stdout` (`Processing:` lines). A final pass at exit picks up anything missed.
+- Fault isolation: a file the batch didn't produce is retried **alone** through the Version 1 path
+  (attempt markers, quarantine after `quarantineAfterFailures`). Each batch re-checks the skip
+  rule at its start, so flattened same-name outputs behave as in Version 1.
+- CSV: one row per file, in input order. New `batch_started` event carries the temp folder.
+- Cancel (`server.js`): deletes the in-flight batch's temp folder + stdout/stderr files as well as
+  the current output (`cancelCleanupPaths`, tested).
+- Tests: Pester `batchRender.Tests.ps1` (grouping, duplicate stems, size + char budget,
+  subfolders, AI overlay in signature, temp→final naming, CSV rows, retry alone + quarantine
+  after 2, single-file batch, off by default, locked/growing file not reported early). The
+  integration suite runs a real 4-file batch with a truncated file and checks events arrive
+  during the batch. Real runs here in both progress modes: OK.
+
+Deviations / notes:
+- Default **`batchRender: false`** (plan §9.3). The Linux gate says NO-GO. Your Windows bench decides.
+- `-BatchRender` is a **string** (`true`/`false`): `powershell -File` cannot pass a `[bool]`.
+- The `-CorrectionsJson` parameter (Phase 4) went into `auto_enhance.ps1` in the same
+  restructuring, because the AI overlay is part of the batch signature. Its tests land with Phase 4.
+- The render limiter is Phase 4 (it limits the `analyze` lane's draft renders).
+- Commits: Phase 0a is one commit. Phases 1 and 2 are a second commit, because they touch the same
+  restructured loop in `auto_enhance.ps1` and couldn't be split cleanly.
+
+Test status at the end of Phase 2: server 209/209 (3 skipped as before), client 105/105, Pester 55/55
+(incl. 5 Integration tests against real RawTherapee 5.10).
