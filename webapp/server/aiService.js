@@ -22,6 +22,7 @@ const { photoKey } = require('./correctionsCache');
 const { atomicWriteFileSync } = require('./atomicFile');
 const imageStats = require('./imageStats');
 const { killProcessTree } = require('./procTree');
+const { createPriorityGate, PRIORITY } = require('./llm/priorityGate');
 const { harmonizeScene } = require('./harmonize');
 const { boundarySystemPrompt, boundarySchema } = require('./llm/scenePrompt');
 
@@ -31,7 +32,12 @@ function createAiService({
   cfg, enqueue, listExecutionOrder, runPowerShellScript, psOpts, getJob, cancelJob, scenesFor = () => [],
 }) {
   const llmCfg = cfg.llm;
-  const provider = createProvider(llmCfg);
+  const rawProvider = createProvider(llmCfg);
+  // Every LLM call goes through one priority gate: an AI run waiting for a plan is served
+  // before review analyses and scene naming (decision after the browser test).
+  const gate = createPriorityGate(llmCfg.concurrency || 1);
+  const provider = gate.wrap(rawProvider, PRIORITY.REVIEW);
+  const runProvider = gate.wrap(rawProvider, PRIORITY.RUN);
   const cache = createCorrectionsCache(cfg.correctionsDir);
   let health = { at: 0, value: null };
 
@@ -85,7 +91,7 @@ function createAiService({
 
   function analyzerFor(job, extra = {}) {
     return createAnalyzer({
-      provider,
+      provider: extra.priority === PRIORITY.RUN ? runProvider : provider,
       llmCfg,
       cache,
       profileCtx,
@@ -216,11 +222,13 @@ function createAiService({
       }
       if (missing.length > 0) {
         const inputKind = resolveInputKind();
-        analyzeJob = enqueue('analyze', async (aj) => {
+        // Own lane: a run's analysis never queues behind review analyses (it still shares the
+        // LLM through the priority gate, where it goes first).
+        analyzeJob = enqueue('analyze-run', async (aj) => {
           const ctrl = new AbortController();
           aj.onCancel = () => ctrl.abort(new Error('cancelled'));
           aj.progress = { total: missing.length, items: missing.map((p) => ({ name: p.relPath, status: 'pending' })) };
-          const counts = await analyzerFor(aj).analyze(missing, {
+          const counts = await analyzerFor(aj, { priority: PRIORITY.RUN }).analyze(missing, {
             inputKind,
             signal: ctrl.signal,
             onResult: (photo, r) => {
@@ -408,7 +416,7 @@ function createAiService({
   }
 
   return {
-    llmCfg, provider, cache, llmHealth, available, startAnalyzeJob, prepareAiRun, describeFiles,
+    llmCfg, provider, runProvider, gate, cache, llmHealth, available, startAnalyzeJob, prepareAiRun, describeFiles,
     lookupForReview, analyzerFor, resolveInputKind, makeRenderDrafts, extractEmbedded, profileCtx,
     createRunProgressHandler, refineScenes, tagsFor, sampleIndexes, reviewImages, renderReviewImages, startReviewRenderJob,
   };

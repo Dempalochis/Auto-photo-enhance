@@ -210,6 +210,12 @@ export default function App() {
   };
 
   const selectedPhotos = photos.filter((p) => selected.has(p.relPath));
+  // No folder switch while a preset preview is rendering or a switch is already in progress
+  // (the server enforces the same rule, and also waits for thumbnails in flight).
+  const previewRendering = Boolean(previewJob && ['queued', 'running', 'paused'].includes(previewJob.status));
+  const folderBlockedReason = previewRendering
+    ? 'A preset preview is still rendering - you can switch folders when it has finished (or cancel it in the Job queue).'
+    : (photosLoading ? 'Loading photos and their previews…' : null);
   const sceneRuns = planSceneRuns(scenes, scenePresets, photos.map((p) => p.relPath));
 
   const handleQueueAllScenes = async () => {
@@ -256,6 +262,7 @@ export default function App() {
                 photoCount={photos.length}
                 onChangeFolder={handleChangeFolder}
                 error={folderError}
+                blockedReason={folderBlockedReason}
               />
               <PhotoPicker
                 photos={photos}

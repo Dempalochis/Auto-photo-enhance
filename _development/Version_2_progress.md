@@ -369,3 +369,10 @@ toward quarantine** (Linux); Merge ↓ direction in newest-first view; red 404s 
 a wrong "llm disabled" note; a crowded scene header. Not changed, documented: one analyze lane, so an
 AI run can wait behind a review analysis (L2); `dramatic_mono` very dark on these samples (L3).
 Tests after the fixes: server 243/243, client 131/131, Pester 62/62.
+
+### Decisions after the browser test (implemented)
+- **AI runs before review analyses:** `analyze-run` lane + LLM priority gate (`llm/priorityGate.js`).
+- **Presets:** unchanged; you'll review all presets later (`dramatic_mono` noted as very dark on the samples).
+- **No folder switch while previews load:** UI controls disabled with the reason; server `409` during a preset
+  preview; it waits for thumbnails in flight before switching (`folderSwitch.js`).
+Tests: server 249/249, client 132/132, Pester 62/62.

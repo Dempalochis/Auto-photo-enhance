@@ -52,3 +52,23 @@ describe('SourceFolderPicker recent-folder history', () => {
     expect(onChangeFolder).toHaveBeenCalledWith('C:\\Photos\\Old1');
   });
 });
+
+describe('SourceFolderPicker - no switch while previews load', () => {
+  test('a blocked reason disables Use this folder, Browse and Recent, shows the reason, and ignores Enter', async () => {
+    const user = userEvent.setup();
+    const onChangeFolder = vi.fn();
+    render(
+      <Tooltip.Provider>
+        <SourceFolderPicker currentPath="C:\\a" history={['C:\\a', 'C:\\b']} photoCount={1} onChangeFolder={onChangeFolder} blockedReason="A preset preview is still rendering" />
+      </Tooltip.Provider>,
+    );
+    expect(screen.getByRole('button', { name: 'Use this folder' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'Browse…' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'C:\\b' })).toBeDisabled();
+    expect(screen.getByRole('status')).toHaveTextContent('A preset preview is still rendering');
+    const input = screen.getByPlaceholderText('C:\\Users\\you\\Pictures\\Shoot');
+    await user.clear(input);
+    await user.type(input, 'C:\\c{Enter}');
+    expect(onChangeFolder).not.toHaveBeenCalled();
+  });
+});

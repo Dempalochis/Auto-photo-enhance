@@ -29,6 +29,7 @@ const { previewFingerprint, isPreviewManifestFresh } = require('./previewCache')
 const { createRunProgressHandler, createPreviewProgressHandler } = require('./runEvents');
 const { listProjects } = require('./projectBrowser');
 const { createAiService } = require('./aiService');
+const folderSwitch = require('./folderSwitch');
 const { entryFromPlan } = require('./analyzer');
 const { mergeUserEdits, validatePlan, summarizePlan } = require('./correctionPlan');
 const { photoKey } = require('./correctionsCache');
@@ -226,6 +227,14 @@ app.post('/api/source-folder', asyncHandler(async (req, res) => {
   const requestedPath = String(req.body?.path || '').trim();
   if (!requestedPath) return res.status(400).json({ error: 'path is required' });
 
+  // No folder switch while previews are loading (see folderSwitch.js).
+  if (folderSwitch.previewBusy(listExecutionOrder('preview'))) {
+    return res.status(409).json({ error: folderSwitch.MESSAGES.preview, reason: 'preview' });
+  }
+  if (!(await folderSwitch.waitForIdle(() => thumbnailsInFlight))) {
+    return res.status(409).json({ error: folderSwitch.MESSAGES.thumbnails, reason: 'thumbnails' });
+  }
+
   let stat;
   try {
     stat = fs.statSync(requestedPath);
@@ -289,7 +298,15 @@ app.get('/api/photos', asyncHandler(async (req, res) => {
   });
 }));
 
+// Thumbnails being served right now - a folder switch waits for these (folderSwitch.js).
+let thumbnailsInFlight = 0;
+
 app.get('/api/photos/thumbnail', asyncHandler(async (req, res) => {
+  thumbnailsInFlight += 1;
+  let counted = true;
+  const done = () => { if (counted) { counted = false; thumbnailsInFlight -= 1; } };
+  res.on('finish', done);
+  res.on('close', done);
   const relPath = req.query.path;
   if (!isSafeRelPath(relPath)) return res.status(400).json({ error: 'invalid photo path' });
   const sourceFile = resolvePhotoPath(relPath);

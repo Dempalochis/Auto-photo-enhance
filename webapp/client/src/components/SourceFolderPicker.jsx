@@ -80,13 +80,18 @@ function BrowseModal({ open, onOpenChange, onSelect, startPath }) {
 
 export default function SourceFolderPicker({
   currentPath, history, photoCount, onChangeFolder, error,
+  // Decision after the browser test: no folder switch while previews are loading. A non-empty
+  // reason disables every way of switching (field, Enter, Use this folder, Browse, Recent).
+  blockedReason = null,
 }) {
   const [inputValue, setInputValue] = useState(currentPath || '');
   const [browseOpen, setBrowseOpen] = useState(false);
 
   useEffect(() => { setInputValue(currentPath || ''); }, [currentPath]);
 
+  const blocked = Boolean(blockedReason);
   const submitPath = (path) => {
+    if (blocked) return;
     if (path && path !== currentPath) onChangeFolder(path);
   };
 
@@ -112,16 +117,17 @@ export default function SourceFolderPicker({
             className="w-full text-sm px-2.5 py-1.5"
           />
         </div>
-        <button type="button" className="btn-secondary text-xs px-2.5 py-1.5" onClick={() => submitPath(inputValue.trim())}>
+        <button type="button" disabled={blocked} title={blockedReason || undefined} className="btn-secondary text-xs px-2.5 py-1.5" onClick={() => submitPath(inputValue.trim())}>
           Use this folder
         </button>
-        <button type="button" className="btn-secondary text-xs px-2.5 py-1.5" onClick={() => setBrowseOpen(true)}>
+        <button type="button" disabled={blocked} title={blockedReason || undefined} className="btn-secondary text-xs px-2.5 py-1.5" onClick={() => setBrowseOpen(true)}>
           Browse…
         </button>
       </div>
       <p className="timestamp mt-2">
         {photoCount} photo{photoCount === 1 ? '' : 's'} found in <span className="text-[var(--text-dim)]">{currentPath}</span>
       </p>
+      {blocked && <p className="text-xs text-[var(--amber)] mt-1" role="status">{blockedReason}</p>}
       {error && <p className="text-xs text-[var(--danger)] mt-1">{error}</p>}
 
       {recentOthers.length > 0 && (
@@ -131,6 +137,7 @@ export default function SourceFolderPicker({
             <button
               key={p}
               type="button"
+              disabled={blocked}
               onClick={() => submitPath(p)}
               title={p}
               className="btn-secondary text-[11px] px-2 py-1 max-w-[220px] truncate"

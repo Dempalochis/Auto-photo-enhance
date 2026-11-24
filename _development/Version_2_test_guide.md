@@ -49,6 +49,9 @@ PowerShell line is echoed there as `[auto_enhance.ps1 abc123] …`).
 - [ ] 1.4 The header pill is green. The Run panel has **no** AI toggle. The picker shows a new
       **Date | Scene** switch, on Date by default (the Version 1 view).
 - [ ] 1.5 Cancel a run mid-way: the in-flight file is removed, finished files stay (as in Version 1).
+- [ ] 1.5b **No folder switch while previews load:** click Preview on a photo, and while the tiles render try
+      to switch folders. **Use this folder**, **Browse…** and **Recent** are disabled with
+      "A preset preview is still rendering…". After the grid is done, switching works again.
 - [ ] 1.6 Corrupt-file handling: copy one raw, truncate it (e.g. keep the first 50 KB), and run it. It fails,
       gets a `.attempts` marker, and on the 2nd run it's quarantined to `failed\`.
 
@@ -201,6 +204,9 @@ For a single CLI run: `scripts\auto_enhance.ps1 … -BatchRender true`.
       plan isn't ready when the render reaches it.
 - [ ] 8.5 **Quit Ollama mid-run:** the run completes, the remaining photos render without AI, and the
       Note column says "AI correction skipped: …". The job is **not** failed.
+- [ ] 8.5b **Priority:** start **Analyze** on ~10 photos in the review panel, then immediately Run 2 other photos
+      with AI on. The job queue shows "AI analysis for … (priority)". The run's photos get their plans right
+      after the review call in progress, without waiting for the whole review (no "AI correction skipped" note).
 - [ ] 8.6 Re-run the same photos with another preset: no new LLM calls (plans are cached; the
       analysis job finishes instantly or isn't created at all).
 - [ ] 8.7 Compare Subtle vs Punchy on one photo (different project names).

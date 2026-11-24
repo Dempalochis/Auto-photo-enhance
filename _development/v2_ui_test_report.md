@@ -96,9 +96,9 @@ The Vite log showed a CSS warning at start-up, which turned out to be a real Ver
 
 | # | Observation |
 |---|---|
-| L1 | **Version 1 race, cosmetic:** switching folders while thumbnails of the old folder are still loading gives a few 404s for those thumbnails (36 in one run). The server has already switched folders; the old grid is about to be replaced anyway. |
-| L2 | **One analyze lane:** an AI run's analysis waits behind any analysis already running (e.g. a review "Analyze"). The run's plan-wait timer starts when it reaches the photo, so with the default `planWaitMs` = `timeoutMs` (60 s) a run queued behind a long review would render that photo **without AI** (with a note). Possible improvement: give run analyses priority over review analyses. |
-| L3 | **`dramatic_mono` renders very dark** on these samples (mean grey 10–12/255 on the A7S sky shot, 41–44 on the forest shot), in the final render too. The channel mixer (blue −38, cyan −22) crushes skies and greens. A Version 1 preset, and RawTherapee 5.10 here vs 5.12 on Windows, so check it there before changing anything. |
+| L1 | **→ decided: no folder switch while previews load (implemented, see below).** Version 1 race, cosmetic: switching folders while thumbnails of the old folder are still loading gives a few 404s for those thumbnails (36 in one run). The server has already switched folders; the old grid is about to be replaced anyway. |
+| L2 | **→ decided: AI runs get priority (implemented, see below).** One analyze lane: an AI run's analysis waits behind any analysis already running (e.g. a review "Analyze"). The run's plan-wait timer starts when it reaches the photo, so with the default `planWaitMs` = `timeoutMs` (60 s) a run queued behind a long review would render that photo **without AI** (with a note). Possible improvement: give run analyses priority over review analyses. |
+| L3 | **→ decided: keep as is; you'll review all presets later.** **`dramatic_mono` renders very dark** on these samples (mean grey 10–12/255 on the A7S sky shot, 41–44 on the forest shot), in the final render too. The channel mixer (blue −38, cyan −22) crushes skies and greens. A Version 1 preset, and RawTherapee 5.10 here vs 5.12 on Windows, so check it there before changing anything. |
 | L4 | Cold preview grids are slow on 24 MP files (≈ 2 min for 33 tiles on 4 cores), the known Version 1 limit. The cache makes repeat views instant. |
 | L5 | Run clears the photo selection (Version 1 behaviour), so the review panel empties after a Run. Fine, but worth knowing when using Analyze → Run → review again. |
 
@@ -109,3 +109,13 @@ your desktop, Windows file locking during batch progress. All are in `Version_2_
 
 Screenshots: `_development/ui_test/` (preview grid, 240-photo library, scene view, review cards, AI tile,
 real-LLM run, fixed scene header). Test scripts (Playwright) were kept in the session scratchpad, not the repo.
+
+## Your decisions (2026-11-24) and what was done
+
+| Decision | Implementation | Verified live |
+|---|---|---|
+| **AI runs get priority over review analyses** | An AI run's analysis has its own job lane (`analyze-run`, shown as "AI analysis for … (priority)"), so it never queues behind a review analysis. All LLM calls go through one priority gate (`llm/priorityGate.js`): when the model is free, a waiting run call goes before any waiting review / scene-naming call. A call already in progress is not interrupted. | Run started while a 6-photo review analysis was running: its analysis waited **1 ms** (was ~2 min), and the run finished in 14.6 s while the review kept going. Unit tests: ordering, no preemption, abort, and the mixed scenario. |
+| **Presets: keep as is for now** | nothing changed | — |
+| **No folder switch while previews load** | While a preset preview is queued/rendering (or photos are loading), the folder field, Enter, **Use this folder**, **Browse…** and the **Recent** buttons are disabled with the reason shown. The server enforces the same rule (`409`), and before switching it also waits (up to 10 s) for photo thumbnails still being served, which removes the stale-thumbnail 404s (L1). | During a cold preview: controls disabled + reason, API switch refused with 409. After the preview finished (164 s): controls enabled, switch accepted (285 ms). |
+
+Tests after the decisions: server 249/249, client 132/132, Pester 62/62.
