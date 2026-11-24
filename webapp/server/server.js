@@ -29,6 +29,7 @@ const { previewFingerprint, isPreviewManifestFresh } = require('./previewCache')
 const { createRunProgressHandler, createPreviewProgressHandler } = require('./runEvents');
 const { listProjects } = require('./projectBrowser');
 const { createAiService } = require('./aiService');
+const { entryFromPlan } = require('./analyzer');
 const { mergeUserEdits, validatePlan, summarizePlan } = require('./correctionPlan');
 const { photoKey } = require('./correctionsCache');
 
@@ -109,6 +110,8 @@ let activePhotosDir = (savedPhotosDir && fs.existsSync(savedPhotosDir)) ? savedP
 
 app.use('/webapp-cache/thumbnails', express.static(cfg.thumbCacheDir));
 app.use('/webapp-cache/previews', express.static(cfg.previewCacheDir));
+// Version 2 Phase 5: before/after draft renders for the AI review page.
+app.use('/webapp-cache/corrections/drafts', express.static(path.join(cfg.correctionsDir, 'drafts')));
 
 // isSafeRelPath/resolvePhotoPath/cacheKeyFor live in ./pathSafety (pure, unit-tested there).
 // This wrapper just closes over the mutable activePhotosDir.
@@ -306,11 +309,28 @@ app.get('/api/presets', (req, res) => {
 
 // ---- preview: render base + all presets for one photo ----
 
-app.post('/api/preview', (req, res) => {
+app.post('/api/preview', asyncHandler(async (req, res) => {
   const { photo } = req.body || {};
   if (!isSafeRelPath(photo)) return res.status(400).json({ error: 'invalid photo' });
   const sourceFile = resolvePhotoPath(photo);
   if (!sourceFile || !fs.existsSync(sourceFile)) return res.status(404).json({ error: 'photo not found' });
+
+  // Version 2 Phase 5: if AI correction is on and this photo already has a plan (cached LLM plan
+  // or your edit - never a new LLM call here), the grid gets a "00_ai_base" tile (base + AI
+  // overlay, no preset), and the overlay's content hash joins the cache fingerprint.
+  let aiOverlay = null;
+  if (cfg.llm.enabled) {
+    try {
+      const [p] = await ai.describeFiles([photo], [sourceFile]);
+      const found = ai.lookupForReview(p);
+      if (found.plan) {
+        const entry = entryFromPlan({ plan: found.plan, describe: found, cache: ai.cache, strength: cfg.llm.strength });
+        if (entry.overlay) aiOverlay = { path: entry.overlay, hash: entry.overlayHash };
+      }
+    } catch (err) {
+      console.warn(`[preview] AI base tile skipped for ${photo}: ${err.message}`);
+    }
+  }
 
   const photoKey = cacheKeyFor(photo);
   const cacheDir = path.join(cfg.previewCacheDir, photoKey);
@@ -325,6 +345,7 @@ app.post('/api/preview', (req, res) => {
     rawConfig: cfg.raw,
     exiftoolPath: cfg.exiftoolPath,
     sourceFile,
+    aiOverlayHash: aiOverlay ? aiOverlay.hash : null,
   });
 
   const job = enqueue('preview', async (job) => {
@@ -344,7 +365,7 @@ app.post('/api/preview', (req, res) => {
     console.log(`[preview ${String(job.id).slice(0, 6)}]   cache      = ${cached ? 'HIT (serving existing tiles)' : 'MISS (rendering)'}`);
 
     const urlFor = (label) => `/webapp-cache/previews/${photoKey}/${label}.jpg`;
-    const labels = ['00_base_only', ...currentPresets];
+    const labels = ['00_base_only', ...(aiOverlay ? ['00_ai_base'] : []), ...currentPresets];
     job.progress = {
       total: labels.length,
       items: labels.map((label) => ({ label, status: cached ? 'done' : 'pending', url: cached ? urlFor(label) : null })),
@@ -352,6 +373,7 @@ app.post('/api/preview', (req, res) => {
 
     if (!cached) {
       const args = ['-SourceFile', sourceFile, '-OutputDir', cacheDir, '-ConfigPath', cfg.configPath, '-EmitEvents'];
+      if (aiOverlay) args.push('-AiOverlay', aiOverlay.path);
       // Version 2 render limiter (opt-in): fewer concurrent preview renders while a batch run is
       // rendering. Unset (default) = Version 1's 3 concurrent preview renders.
       const limit = cfg.raw.previewConcurrencyWhileRunning;
@@ -388,8 +410,8 @@ app.post('/api/preview', (req, res) => {
     return { photo, images };
   }, { photo });
 
-  res.json({ jobId: job.id });
-});
+  return res.json({ jobId: job.id });
+}));
 
 // ---- Version 2 Phase 3: scenes (time/EXIF groups; Phase 5 refines them with the LLM) ----
 
@@ -503,11 +525,16 @@ app.get('/api/corrections', asyncHandler(async (req, res) => {
   if (!photo) return res.status(400).json({ error: 'invalid photo path' });
   const found = ai.lookupForReview(photo);
   if (!found.plan) return res.status(404).json({ error: 'no plan for this photo yet - run Analyze first' });
+  const img = ai.reviewImages(photo, found);
+  const urlIf = (f) => (f && fs.existsSync(f) ? `/webapp-cache/corrections/drafts/${path.basename(f)}` : null);
   return res.json({
     path: photo.relPath,
     plan: found.plan,
     summary: summarizePlan(found.plan),
     source: found.source,
+    beforeUrl: urlIf(img.before),
+    afterUrl: urlIf(img.after),
+    afterPending: Boolean(img.after) && !fs.existsSync(img.after),
     llmPlan: found.source === 'edit' ? (found.llmPlan && found.llmPlan.plan) || null : found.plan,
     meta: found.meta || (found.llmPlan && found.llmPlan.meta) || null,
   });
@@ -525,6 +552,15 @@ app.put('/api/corrections', asyncHandler(async (req, res) => {
   ai.cache.putEdit(photoKey(photo.abs, photo.size, photo.mtime), { plan, path: photo.relPath, updatedAt: Date.now() });
   return res.json({ path: photo.relPath, plan, summary: summarizePlan(plan), source: 'edit' });
 }));
+
+// Re-render the before/after review images for some photos: { files } -> { jobId }.
+app.post('/api/corrections/render', (req, res) => {
+  if (!cfg.llm.enabled) return res.status(400).json({ error: 'AI correction is switched off' });
+  const { files } = req.body || {};
+  const absoluteFiles = resolveFilesOr400(files, res);
+  if (!absoluteFiles) return undefined;
+  return res.json({ jobId: ai.startReviewRenderJob({ files, absoluteFiles }).id });
+});
 
 // Drop the user's edit: back to the LLM's plan.
 app.delete('/api/corrections', asyncHandler(async (req, res) => {

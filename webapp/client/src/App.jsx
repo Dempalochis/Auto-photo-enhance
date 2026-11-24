@@ -11,6 +11,8 @@ import RunPanel from './components/RunPanel';
 import JobQueuePanel from './components/JobQueuePanel';
 import HealthIndicator from './components/HealthIndicator';
 import ProjectBrowser from './components/ProjectBrowser';
+import SceneActions from './components/SceneActions';
+import CorrectionReview from './components/CorrectionReview';
 
 const PROJECT_NAME_KEY = 'ape.lastProjectName';
 const PRESET_KEY = 'ape.lastPreset';
@@ -244,6 +246,15 @@ export default function App() {
                 onFindScenes={handleFindScenes}
                 scenesStatus={scenesJobId ? 'running' : 'idle'}
                 onSceneSelected={handleSceneSelected}
+                sceneActions={(group) => (
+                  <SceneActions
+                    group={group}
+                    scenes={scenes}
+                    selected={selected}
+                    onChanged={(r) => setScenes(r.scenes || [])}
+                    onError={setLoadError}
+                  />
+                )}
               />
             </div>
             <PresetPreview
@@ -253,6 +264,7 @@ export default function App() {
               selectedPreset={selectedPreset}
               onSelectPreset={setSelectedPreset}
             />
+            <CorrectionReview selectedPhotos={selectedPhotos} llm={llm} />
           </div>
 
           <div className="lg:sticky lg:top-6 self-start space-y-4">

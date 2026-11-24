@@ -42,6 +42,8 @@ export default function PresetPreview({ previewPhoto, job, presetNames = [], sel
   };
 
   const baseItem = tileFor('00_base_only');
+  // Version 2 Phase 5: the AI-corrected base (no preset), shown when the photo has an AI plan.
+  const aiBase = jobItems.find((i) => i.label === '00_ai_base') || null;
   const byCategory = CATEGORIES.map((cat) => ({
     ...cat,
     items: cat.presets.filter((name) => presetNames.includes(name)).map(tileFor),
@@ -70,6 +72,16 @@ export default function PresetPreview({ previewPhoto, job, presetNames = [], sel
             isSelected={selectedPreset === 'none'}
             accentColor="var(--text-dim)"
           />
+          {aiBase && (
+            <figure className="rounded-[4px] overflow-hidden card m-0" data-testid="ai-base-tile">
+              <div className="w-full aspect-[3/2] bg-[var(--panel-raised)] flex items-center justify-center">
+                {aiBase.status === 'done' && aiBase.url
+                  ? <img src={aiBase.url} alt="AI-corrected base" className="w-full h-full object-cover" />
+                  : <span className="text-xs text-[var(--text-dim)]">{aiBase.status === 'failed' ? 'failed' : 'rendering…'}</span>}
+              </div>
+              <figcaption className="text-[11px] px-2 py-1.5 truncate text-[var(--amber)]">AI-corrected base (compare)</figcaption>
+            </figure>
+          )}
         </div>
 
         {byCategory.map((cat) => (

@@ -78,3 +78,20 @@ describe('PresetPreview', () => {
     expect(screen.getByText('golden_hour')).toBeInTheDocument();
   });
 });
+
+describe('PresetPreview - Version 2 AI base tile', () => {
+  test('shows the 00_ai_base tile next to the base only when the job has one', () => {
+    const job = { progress: { items: [
+      { label: '00_base_only', status: 'done', url: '/a.jpg' },
+      { label: '00_ai_base', status: 'done', url: '/b.jpg' },
+    ] } };
+    render(<PresetPreview previewPhoto="x.ARW" job={job} presetNames={[]} selectedPreset="none" onSelectPreset={() => {}} />);
+    expect(screen.getByTestId('ai-base-tile')).toBeInTheDocument();
+    expect(screen.getByAltText('AI-corrected base')).toHaveAttribute('src', '/b.jpg');
+  });
+
+  test('no AI tile without one (Version 1 grid)', () => {
+    render(<PresetPreview previewPhoto="x.ARW" job={{ progress: { items: [{ label: '00_base_only', status: 'done', url: '/a.jpg' }] } }} presetNames={[]} selectedPreset="none" onSelectPreset={() => {}} />);
+    expect(screen.queryByTestId('ai-base-tile')).not.toBeInTheDocument();
+  });
+});

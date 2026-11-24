@@ -54,6 +54,7 @@ function jobLabel(job) {
   if (job.type === 'run') return job.meta?.projectName || 'Batch run';
   if (job.type === 'preview') return `Preview: ${job.meta?.photo || '…'}`;
   if (job.type === 'scenes') return 'Find scenes';
+  if (job.type === 'review') return 'AI review images';
   if (job.type === 'analyze') return `AI analysis${job.meta?.purpose === 'run' ? ` for ${job.meta?.projectName || 'run'}` : ''}`;
   return job.type;
 }
@@ -67,6 +68,7 @@ function jobSubtitle(job) {
   // Version 2: scene detection and AI analysis jobs.
   if (job.type === 'scenes') return job.meta?.days ? `Groups ${job.meta.days.length} day(s) into scenes` : 'Groups this folder into scenes';
   if (job.type === 'analyze') return `${job.meta?.photoCount ?? '?'} photo(s) · ${job.meta?.model || 'LLM'}`;
+  if (job.type === 'review') return `Before/after renders for ${job.meta?.photoCount ?? '?'} photo(s)`;
   return 'Renders base + all preset looks for one photo';
 }
 

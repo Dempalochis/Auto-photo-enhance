@@ -11,7 +11,7 @@ One entry per phase: what was done, what was skipped and why, deviations from th
 | 2 Batched rendering + fault isolation | ✅ built, **off by default** (Linux gate: NO-GO) |
 | 3 Scene grouping (no LLM) | ✅ done (2026-11-24) |
 | 4 LLM core + AI correction | ✅ built, **off by default** (`llm.enabled: false`) |
-| 5 LLM scenes + review UI | ⬜ not started |
+| 5 LLM scenes + review UI | ✅ done (needs `llm.enabled`) |
 | 6 Quality | ⬜ not started |
 | 7 Cloud providers | ⏸ on hold |
 
@@ -238,3 +238,42 @@ Deviations:
   `aiService.js` (+ `sceneGrouper.test.js`).
 
 Test status: server 235/235, client 119/119, Pester 62/62 (incl. 6 Integration against RawTherapee 5.10).
+
+## Phase 5: LLM scenes + review and edit UI ✅
+
+Done:
+- **Scene tags:** `sceneTags` (setting / subject / light / caption, fixed vocabularies, caption ≤ 8 words)
+  in the analysis schema. Tags-only mode (`tagsOnlySchema`, short prompt, embedded JPEG), cached per
+  photo + model + prompt version. Tags from an existing correction plan are reused for free. Only an
+  even sample of each segment is tagged (`scenes.maxTagsPerSegment`, default 6, first + last always),
+  which keeps "Find scenes" affordable on big folders.
+- **Per-day text-only call** (`llm/scenePrompt.js`, `sceneGrouper.js`): merge neighbouring segments,
+  split one after a photo index, name groups. Strict validation (`applySceneReply`): non-contiguous,
+  overlapping or unknown groups are dropped, as are splits on merged segments or out of range. Segments
+  missing from the reply stay alone. Any failure falls back to the Phase 3 segments for that day. Edited
+  scenes are still never touched. `scenes.useLlm: true` is a no-op without an enabled, reachable LLM.
+- **Correction review** (`CorrectionReview.jsx`, below the preset grid, only with a usable LLM):
+  "Analyze N selected" / "Re-analyse" (up to 24 cards). Per photo: before (base draft) / after
+  (base + AI overlay draft) images, scene/lighting/issues/caption/notes, chips with − / + per step,
+  "All to 0", "Reset to AI". `PUT/DELETE /api/corrections`, `POST /api/corrections/render` (new
+  `review` lane) re-renders only the new "after" (drafts are cached by overlay hash).
+- **Scene editor** (`SceneActions.jsx` in each scene header): Rename (inline), Merge ↓ (with the next
+  scene), Split (after the last selected photo of the scene), Move N here (selected photos from other
+  scenes). Uses the Phase 3 endpoints. Search by captions works through `sceneUtils`.
+- **Preview grid on the AI base:** `00_ai_base` tile (base + AI overlay, no preset) next to
+  `00_base_only` when AI is enabled and the photo already has a plan (cached or edited, never a new LLM
+  call). The overlay hash joins the composite fingerprint, so editing a plan re-renders that photo's grid only.
+  `preview_presets.ps1 -AiOverlay`.
+- Mock provider answers per schema (scene grouping / tags / plan) so every flow can be tried with
+  `"provider": "mock"`.
+- Tests: `sceneGrouper.test.js` (6), `correctionSteps.test.js`, `SceneActions.test.jsx`,
+  `CorrectionReview.test.jsx`, PresetPreview AI-tile tests. **Live:** Find scenes with the LLM step (mock),
+  analyze → before/after URLs → edit (+2 exposure) → re-render → `00_ai_base` tile in the preview job,
+  plus screenshots of the review panel and the RunPanel toggle.
+
+Deviations:
+- The review shows the "after" image at `llm.strength` (config), not at the RunPanel dial.
+- Split in the scene editor uses the photo selection ("after the last selected photo in this scene")
+  instead of a separate pick mode. Move uses the selection too.
+
+Test status: server 235/235, client 129/129, Pester 62/62.

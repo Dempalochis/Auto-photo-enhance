@@ -124,6 +124,8 @@ function createAiService({
           results[photo.relPath] = r.error ? { error: r.error } : { summary: r.summary, source: r.source };
         },
       });
+      // Before/after draft renders for the review page (Phase 5).
+      if (!ctrl.signal.aborted) await renderReviewImages(job, photos.filter((p) => results[p.relPath] && !results[p.relPath].error));
       return { counts, results };
     }, {
       purpose: 'review', photoCount: files.length, model: provider.model, files,
@@ -297,10 +299,43 @@ function createAiService({
     return analyzerFor({ id: 'lookup', log: [] }).lookup(photo);
   }
 
+  // Before = base draft, after = base + AI overlay (at llm.strength) draft. Cached by file name
+  // (photo + base profile + overlay hash), so an edit only renders the new "after".
+  function reviewImages(photo, found = lookupForReview(photo)) {
+    const before = cache.draftPath(found.pk, found.baseFp, null);
+    const entry = found.plan ? entryFromPlan({ plan: found.plan, describe: found, cache, strength: llmCfg.strength }) : null;
+    const after = entry && entry.overlay ? cache.draftPath(found.pk, found.baseFp, entry.overlayHash) : null;
+    return {
+      before, after, overlay: entry && entry.overlay, overlayHash: entry && entry.overlayHash,
+    };
+  }
+
+  async function renderReviewImages(job, photos) {
+    const list = [];
+    for (const p of photos) {
+      const img = reviewImages(p);
+      list.push({ source: p.abs, out: img.before, aiOverlay: null });
+      if (img.after) list.push({ source: p.abs, out: img.after, aiOverlay: img.overlay });
+    }
+    if (list.length) await makeRenderDrafts(job)(list, () => {});
+    return list.length;
+  }
+
+  /** Re-render before/after images for some photos (after an edit) in the `review` lane. */
+  function startReviewRenderJob({ files, absoluteFiles }) {
+    return enqueue('review', async (job) => {
+      const photos = await describeFiles(files, absoluteFiles);
+      job.progress = { total: photos.length, items: photos.map((p) => ({ name: p.relPath, status: 'running' })) };
+      const n = await renderReviewImages(job, photos);
+      job.progress.items.forEach((i) => { i.status = 'done'; });
+      return { rendered: n };
+    }, { purpose: 'review images', photoCount: files.length, files });
+  }
+
   return {
     llmCfg, provider, cache, llmHealth, available, startAnalyzeJob, prepareAiRun, describeFiles,
     lookupForReview, analyzerFor, resolveInputKind, makeRenderDrafts, extractEmbedded, profileCtx,
-    createRunProgressHandler, refineScenes, tagsFor, sampleIndexes,
+    createRunProgressHandler, refineScenes, tagsFor, sampleIndexes, reviewImages, renderReviewImages, startReviewRenderJob,
   };
 }
 

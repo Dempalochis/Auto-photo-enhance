@@ -59,3 +59,10 @@ export const renameScene = (id, name) => jsonFetch(`/api/scenes/${encodeURICompo
 export const mergeScenes = (ids) => jsonFetch('/api/scenes/merge', jsonBody('POST', { ids }));
 export const splitScene = (id, afterRelPath) => jsonFetch(`/api/scenes/${encodeURIComponent(id)}/split`, jsonBody('POST', { afterRelPath }));
 export const moveToScene = (relPaths, toId) => jsonFetch('/api/scenes/move', jsonBody('POST', { relPaths, toId }));
+
+// ---- Version 2 Phase 4/5: AI analysis + review ----
+export const startAnalyze = (files, opts = {}) => jsonFetch('/api/analyze', jsonBody('POST', { files, ...opts }));
+export const getCorrection = (relPath) => jsonFetch(`/api/corrections?path=${encodeURIComponent(relPath)}`);
+export const saveCorrection = (relPath, adjustments) => jsonFetch(`/api/corrections?path=${encodeURIComponent(relPath)}`, jsonBody('PUT', { adjustments }));
+export const resetCorrection = (relPath) => jsonFetch(`/api/corrections?path=${encodeURIComponent(relPath)}`, { method: 'DELETE' });
+export const renderCorrections = (files) => jsonFetch('/api/corrections/render', jsonBody('POST', { files }));

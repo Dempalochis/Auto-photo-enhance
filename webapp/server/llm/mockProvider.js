@@ -18,6 +18,19 @@ const DEFAULT_REPLY = {
   },
 };
 
+// Answers in the shape the caller's schema asks for, so the UI can be tried end to end:
+// scene grouping (text-only) -> one named group per day; tags-only -> sceneTags; else a plan.
+function defaultReplyFor(ctx = {}) {
+  const props = (ctx.jsonSchema && ctx.jsonSchema.properties) || {};
+  if (props.groups) {
+    const n = ((ctx.userText || '').match(/^Segment \d+:/gm) || []).length;
+    return { groups: [{ segments: Array.from({ length: n }, (_, k) => k), name: 'Mock scene' }], splits: [] };
+  }
+  if (props.sceneTags && !props.adjustments) return { sceneTags: DEFAULT_REPLY.sceneTags };
+  if (props.sameScene) return { sameScene: true };
+  return DEFAULT_REPLY;
+}
+
 function createMockProvider(cfg = {}, hooks = {}) {
   let calls = 0;
   const pick = (v, i, ctx) => (typeof v === 'function' ? v(i, ctx) : v);
@@ -36,7 +49,7 @@ function createMockProvider(cfg = {}, hooks = {}) {
     }
     const failure = pick(hooks.fail, i, ctx);
     if (failure) throw failure instanceof Error ? failure : new Error('mock provider failure');
-    const reply = pick(hooks.reply, i, ctx) ?? DEFAULT_REPLY;
+    const reply = pick(hooks.reply, i, ctx) ?? defaultReplyFor(ctx);
     return { text: typeof reply === 'string' ? reply : JSON.stringify(reply), usage: null, model: 'mock' };
   }
 
