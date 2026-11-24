@@ -192,6 +192,8 @@ export default function PhotoPicker({
   photos, loading, selected, onToggle, onSelectMany, onPreview, previewPhoto, previewStarting,
   // Version 2 Phase 3 (all optional: without them the picker is exactly Version 1's date view)
   scenes = null, onFindScenes = null, scenesStatus = null, onSceneSelected = null, sceneActions = null,
+  // Version 2 Phase 6: "Queue all scenes" (one run per scene with a preset assigned)
+  onQueueAllScenes = null, sceneRunCount = 0,
 }) {
   const [search, setSearch] = useState('');
   const [minDate, setMinDate] = useState('');
@@ -309,6 +311,13 @@ export default function PhotoPicker({
               className="btn-secondary text-xs px-2.5 py-1.5"
             >
               {scenesStatus === 'running' ? 'Finding scenes…' : 'Find scenes'}
+            </button>
+          </Hint>
+        )}
+        {sceneMode && onQueueAllScenes && (
+          <Hint text="Queues one normal run per scene that has a preset picked in its header, named after the scene. Scenes without a preset are left out.">
+            <button type="button" disabled={sceneRunCount === 0} onClick={onQueueAllScenes} className="btn-secondary text-xs px-2.5 py-1.5">
+              Queue all scenes{sceneRunCount ? ` (${sceneRunCount})` : ''}
             </button>
           </Hint>
         )}

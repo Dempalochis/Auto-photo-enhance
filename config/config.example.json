@@ -22,7 +22,9 @@
     "evJumpThreshold": 3,
     "splitByCamera": true,
     "useLlm": true,
-    "harmonizeCorrections": true
+    "harmonizeCorrections": true,
+    "boundaryCheck": false,
+    "maxTagsPerSegment": 6
   },
   "llm": {
     "enabled": false,
@@ -38,6 +40,7 @@
     "histogramStats": false,
     "burstReuse": true,
     "keepAlive": "10m",
-    "temperature": 0.2
+    "temperature": 0.2,
+    "maxImagePx": 1024
   }
 }

@@ -12,7 +12,7 @@ One entry per phase: what was done, what was skipped and why, deviations from th
 | 3 Scene grouping (no LLM) | ✅ done (2026-11-24) |
 | 4 LLM core + AI correction | ✅ built, **off by default** (`llm.enabled: false`) |
 | 5 LLM scenes + review UI | ✅ done (needs `llm.enabled`) |
-| 6 Quality | ⬜ not started |
+| 6 Quality | ✅ built; the AI-only features need `llm.enabled` |
 | 7 Cloud providers | ⏸ on hold |
 
 ## Environment notes
@@ -277,3 +277,40 @@ Deviations:
   instead of a separate pick mode. Move uses the selection too.
 
 Test status: server 235/235, client 129/129, Pester 62/62.
+
+## Phase 6: quality features ✅
+
+Done (each behind its own switch):
+- **Refine pass** (`llm.refinePass`, default **false**): after pass 1, a **real RawTherapee draft render**
+  with the pass-1 overlay ("after") next to the base draft ("before") goes back to the model, which may
+  change each step by at most ±1. One round; the result is clamped to ±2. No `sharp` approximation
+  (decided). Any failure keeps the pass-1 plan. The plan cache key includes the refine flag.
+- **Scene harmonization** (`scenes.harmonizeCorrections`, default true, acts only in AI runs): photos of
+  one saved scene (≥ 2 in the run) are held until all have plans. warmth/tint/dehaze go to the scene median,
+  clarity/saturation/contrast halfway toward it, exposure/highlights/shadows stay per photo. Your edited
+  plans are never changed and don't count toward the median. The run result reports `aiHarmonizedScenes`.
+- **Per-scene presets + Queue all scenes:** a preset dropdown in each scene header (remembered per
+  browser) and **Queue all scenes (N)** in the scene-view toolbar. It queues one normal run job per scene
+  that has a preset, named after the scene, with the RunPanel's AI setting.
+- **Histogram stats** (`llm.histogramStats`, default **false**): mean luminance, % clipped highlights/shadows,
+  mean saturation, RGB of the brightest 5 %, added to the prompt. Uses **`sharp` as an optional dependency**
+  (`webapp/server` `optionalDependencies`). Without it the stats are simply skipped. When available, `sharp`
+  also downscales the LLM input to `llm.maxImagePx` (1024), which fixes the slow embedded-JPEG input noted
+  in Phase 4.
+- **Burst reuse** (`llm.burstReuse`, default true, acts only in AI analyses): frames ≤ 2 s apart with the same
+  ISO/shutter/aperture reuse the first frame's plan (the leader is the burst's first photo in render order,
+  so a single worker can't deadlock).
+- **Two-thumbnail boundary check** (`scenes.boundaryCheck`, default **false**): for a boundary caused only
+  by a time gap ≤ 2x `maxGapMinutes`, the last/first photos either side go to the model ("same scene?").
+  Yes = merged before naming.
+- Tests: `phase6.test.js` (harmonize, bursts incl. leader order, stats, refine ±1 with two real-render jobs,
+  refine off = one call), `scenePresets.test.js`. **Live:** refine pass with real draft renders, stats
+  computed by sharp (36.8 % clipped sky), harmonization of the A7S scene in an AI run.
+
+Not done / deviations:
+- **"Each feature measured on your photos"** (the exit criterion) is not possible here: no photo library and only a
+  2B CPU model. So the defaults follow the plan: refine, stats and boundary check **off**; harmonize and burst
+  reuse **on**, but they only act when AI correction is switched on. Their real value is for your test (test guide §6).
+- Scene preset assignments live in the browser (localStorage), not on the server.
+
+Test status: server 242/242, client 130/130, Pester 62/62.

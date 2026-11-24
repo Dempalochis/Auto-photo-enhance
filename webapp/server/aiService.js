@@ -20,11 +20,14 @@ const { refineDay } = require('./sceneGrouper');
 const { autoScenesFromSegments } = require('./scenesStore');
 const { photoKey } = require('./correctionsCache');
 const { atomicWriteFileSync } = require('./atomicFile');
+const imageStats = require('./imageStats');
+const { harmonizeScene } = require('./harmonize');
+const { boundarySystemPrompt, boundarySchema } = require('./llm/scenePrompt');
 
 const HEALTH_TTL_MS = 10000;
 
 function createAiService({
-  cfg, enqueue, listExecutionOrder, runPowerShellScript, psOpts, getJob, cancelJob,
+  cfg, enqueue, listExecutionOrder, runPowerShellScript, psOpts, getJob, cancelJob, scenesFor = () => [],
 }) {
   const llmCfg = cfg.llm;
   const provider = createProvider(llmCfg);
@@ -81,7 +84,16 @@ function createAiService({
 
   function analyzerFor(job, extra = {}) {
     return createAnalyzer({
-      provider, llmCfg, cache, profileCtx, renderDrafts: makeRenderDrafts(job), extractEmbedded, ...extra,
+      provider,
+      llmCfg,
+      cache,
+      profileCtx,
+      renderDrafts: makeRenderDrafts(job),
+      extractEmbedded,
+      // Phase 6 (optional `sharp`): histogram stats for the prompt, and downscaling to maxImagePx.
+      stats: imageStats.available() ? imageStats.imageStats : null,
+      resize: imageStats.available() ? imageStats.resizeForLlm : null,
+      ...extra,
     });
   }
 
@@ -138,7 +150,9 @@ function createAiService({
    *  - onEvent: feed every @@EVENT (waiting_for_plan starts that photo's timeout)
    *  - finish(): settle/close everything once the render process has exited
    */
-  async function prepareAiRun(job, { files, absoluteFiles, strength }) {
+  async function prepareAiRun(job, {
+    files, absoluteFiles, strength, photosRoot,
+  }) {
     const runFile = cache.runFile(job.id);
     const entries = {};
     cache.writeRunFile(job.id, entries);
@@ -151,9 +165,37 @@ function createAiService({
     job.aiNotes = [];
     const st = strengthValue(strength);
 
-    const onResult = (photo, r) => {
+    const direct = (photo, r) => {
       if (r.error) { board.fail(photo.abs, r.error); return; }
       board.resolve(photo.abs, entryFromPlan({ plan: r.plan, describe: r.describe, cache, strength: st }));
+    };
+
+    // Phase 6 scene harmonization (scenes.harmonizeCorrections, default on): photos of one scene
+    // in this run are held until every one of them has a plan (or failed), then warmth/tint/dehaze
+    // go to the scene median and clarity/saturation/contrast halfway toward it.
+    const harmonize = !(cfg.raw.scenes && cfg.raw.scenes.harmonizeCorrections === false);
+    const sceneOf = new Map();
+    const held = new Map();
+    if (harmonize) {
+      const byRel = new Map(photos.map((p) => [p.relPath, p]));
+      for (const scene of scenesFor(photosRoot) || []) {
+        const members = scene.photos.filter((r) => byRel.has(r));
+        if (members.length < 2) continue;
+        members.forEach((r) => sceneOf.set(byRel.get(r).abs, scene.id));
+        held.set(scene.id, { expected: members.length, got: new Map() });
+      }
+    }
+    const harmonizedCount = { scenes: 0 };
+    const onResult = (photo, r) => {
+      const sid = sceneOf.get(photo.abs);
+      if (!sid) { direct(photo, r); return; }
+      const h = held.get(sid);
+      h.got.set(photo.abs, { photo, r });
+      if (h.got.size < h.expected) return;
+      const ok = [...h.got.values()].filter((x) => !x.r.error);
+      const out = harmonizeScene(ok.map((x) => ({ key: x.photo.abs, plan: x.r.plan, edited: x.r.source === 'edit' })));
+      harmonizedCount.scenes += 1;
+      for (const x of h.got.values()) direct(x.photo, x.r.error ? x.r : { ...x.r, plan: out.get(x.photo.abs) });
     };
 
     let analyzeJob = null;
@@ -210,7 +252,7 @@ function createAiService({
           if (aj && (aj.status === 'queued' || aj.status === 'running' || aj.status === 'paused')) cancelJob(analyzeJob.id);
         }
         const skipped = Object.values(entries).filter((e) => e.note).length;
-        return { aiSkipped: skipped, aiNotes: job.aiNotes };
+        return { aiSkipped: skipped, aiNotes: job.aiNotes, aiHarmonizedScenes: harmonizedCount.scenes };
       },
     };
   }
@@ -276,8 +318,39 @@ function createAiService({
     }
     if (job) job.progress.items[2].status = 'done';
 
+    // Phase 6 two-thumbnail boundary check (scenes.boundaryCheck, default off): for an unclear
+    // boundary (a time gap of at most 2x maxGapMinutes, nothing else changed) send the photos on
+    // either side and ask "same scene?". Yes = the two segments are merged before naming.
+    let segments = plan.segments;
+    if (cfg.raw.scenes && cfg.raw.scenes.boundaryCheck === true) {
+      const maxGap = (plan.options && plan.options.maxGapMinutes) || 10;
+      const merged = [];
+      for (const seg of segments) {
+        const prev = merged[merged.length - 1];
+        const m = /^gap (\d+) min$/.exec(seg.startReason || '');
+        const sameDay = prev && prev.start.slice(0, 10) === seg.start.slice(0, 10);
+        if (prev && sameDay && m && +m[1] <= 2 * maxGap) {
+          try {
+            const a = await extractEmbedded(asPhoto(prev.photos[prev.photos.length - 1]));
+            const b = await extractEmbedded(asPhoto(seg.photos[0]));
+            const reply = await provider.analyzeImage({
+              images: [a, b].map((f) => ({ base64: fs.readFileSync(f).toString('base64'), mediaType: 'image/jpeg' })),
+              systemPrompt: boundarySystemPrompt(), userText: 'Same scene?', jsonSchema: boundarySchema(),
+            });
+            if ((extractJson(reply.text) || {}).sameScene === true) {
+              merged[merged.length - 1] = { ...prev, photos: [...prev.photos, ...seg.photos], end: seg.end };
+              notes.push(`boundary check merged ${prev.photos[prev.photos.length - 1]} | ${seg.photos[0]}`);
+              continue;
+            }
+          } catch (err) { notes.push(`boundary check failed: ${err.message}`); }
+        }
+        merged.push(seg);
+      }
+      segments = merged;
+    }
+
     const byDay = new Map();
-    for (const seg of plan.segments) {
+    for (const seg of segments) {
       const day = seg.start.slice(0, 10);
       if (!byDay.has(day)) byDay.set(day, []);
       byDay.get(day).push(seg);

@@ -88,7 +88,15 @@ const startupCheck = checkStartupConfig(cfg);
 
 // Version 2 Phase 4: LLM provider, analyze lane, AI runs. Inert while llm.enabled is false.
 const ai = createAiService({
-  cfg, enqueue, listExecutionOrder, runPowerShellScript, psOpts, getJob, cancelJob,
+  cfg,
+  enqueue,
+  listExecutionOrder,
+  runPowerShellScript,
+  psOpts,
+  getJob,
+  cancelJob,
+  // Phase 6 harmonization: the saved scenes of the run's source folder.
+  scenesFor: (folder) => scenesStore.readStore(path.join(cfg.stateDir, 'scenes'), folder).scenes,
 });
 if (cfg.llm.enabled) {
   ai.llmHealth().then((h) => console.log(`[server] LLM: ${h.provider} ${h.model} -> ${h.status} (${h.detail})`));
@@ -601,7 +609,9 @@ function makeRunJobFn({
   return async (job) => {
     job.progress = { total: files.length, items: files.map((relPath) => ({ name: relPath, status: 'pending' })) };
     // Version 2 Phase 4: AI-guided correction for this run (plans handed over as they're ready).
-    const aiRun = aiCorrection ? await ai.prepareAiRun(job, { files, absoluteFiles, strength: aiStrength }) : null;
+    const aiRun = aiCorrection ? await ai.prepareAiRun(job, {
+      files, absoluteFiles, strength: aiStrength, photosRoot,
+    }) : null;
 
     const args = [
       '-OutputDir', outputDir,

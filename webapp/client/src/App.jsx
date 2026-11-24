@@ -13,6 +13,7 @@ import HealthIndicator from './components/HealthIndicator';
 import ProjectBrowser from './components/ProjectBrowser';
 import SceneActions from './components/SceneActions';
 import CorrectionReview from './components/CorrectionReview';
+import { loadScenePresets, saveScenePresets, planSceneRuns } from './scenePresets';
 
 const PROJECT_NAME_KEY = 'ape.lastProjectName';
 const PRESET_KEY = 'ape.lastPreset';
@@ -63,6 +64,10 @@ export default function App() {
   const [scenes, setScenes] = useState([]);
   const [scenesJobId, setScenesJobId] = useState(null);
   const scenesJob = useJob(scenesJobId);
+  // Version 2 Phase 6: a preset per scene + "Queue all scenes".
+  const [scenePresets, setScenePresets] = useState(loadScenePresets);
+  useEffect(() => { saveScenePresets(scenePresets); }, [scenePresets]);
+  const [sceneQueueMsg, setSceneQueueMsg] = useState(null);
   const refreshScenes = () => getScenes().then((r) => setScenes(r.scenes || [])).catch(() => setScenes([]));
   // Run jobs are no longer tracked by a single client-side ID - the JobQueuePanel polls the
   // server's job list directly, which is what lets Run stay usable for queuing another batch
@@ -205,6 +210,22 @@ export default function App() {
   };
 
   const selectedPhotos = photos.filter((p) => selected.has(p.relPath));
+  const sceneRuns = planSceneRuns(scenes, scenePresets, photos.map((p) => p.relPath));
+
+  const handleQueueAllScenes = async () => {
+    let queued = 0;
+    for (const r of sceneRuns) {
+      try {
+        // eslint-disable-next-line no-await-in-loop
+        await startRun(r.files, r.preset, r.name, aiUsable && aiCorrection ? { aiCorrection: true, aiStrength } : undefined);
+        queued += 1;
+      } catch (err) {
+        setLoadError(`Queue scene "${r.name}" failed: ${err.message}`);
+      }
+    }
+    setSceneQueueMsg(`Queued ${queued} scene run${queued === 1 ? '' : 's'} - see Job queue.`);
+    setTimeout(() => setSceneQueueMsg(null), 5000);
+  };
 
   return (
     <Tooltip.Provider delayDuration={200}>
@@ -217,6 +238,9 @@ export default function App() {
           <HealthIndicator />
         </header>
 
+        {sceneQueueMsg && (
+          <div className="mx-6 mt-4 panel text-[var(--cat-nature)] text-sm px-4 py-2">{sceneQueueMsg}</div>
+        )}
         {loadError && (
           <div className="mx-6 mt-4 panel border-[var(--danger)] text-[var(--danger)] text-sm px-4 py-2">
             {loadError}
@@ -246,14 +270,34 @@ export default function App() {
                 onFindScenes={handleFindScenes}
                 scenesStatus={scenesJobId ? 'running' : 'idle'}
                 onSceneSelected={handleSceneSelected}
+                onQueueAllScenes={handleQueueAllScenes}
+                sceneRunCount={sceneRuns.length}
                 sceneActions={(group) => (
-                  <SceneActions
-                    group={group}
-                    scenes={scenes}
-                    selected={selected}
-                    onChanged={(r) => setScenes(r.scenes || [])}
-                    onError={setLoadError}
-                  />
+                  <>
+                    {group.scene && group.scene.id !== '__ungrouped__' && (
+                      <select
+                        aria-label={`Preset for ${group.scene.name}`}
+                        value={scenePresets[group.scene.id] || ''}
+                        onChange={(e) => setScenePresets((prev) => {
+                          const next = { ...prev };
+                          if (e.target.value) next[group.scene.id] = e.target.value; else delete next[group.scene.id];
+                          return next;
+                        })}
+                        className="text-[10px] py-0.5 px-1 max-w-[110px]"
+                      >
+                        <option value="">preset…</option>
+                        <option value="none">none</option>
+                        {presetNames.map((n) => <option key={n} value={n}>{n}</option>)}
+                      </select>
+                    )}
+                    <SceneActions
+                      group={group}
+                      scenes={scenes}
+                      selected={selected}
+                      onChanged={(r) => setScenes(r.scenes || [])}
+                      onError={setLoadError}
+                    />
+                  </>
                 )}
               />
             </div>

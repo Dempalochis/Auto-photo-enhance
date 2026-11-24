@@ -10,5 +10,8 @@
   },
   "dependencies": {
     "express": "^4.19.2"
+  },
+  "optionalDependencies": {
+    "sharp": "^0.34.5"
   }
 }
