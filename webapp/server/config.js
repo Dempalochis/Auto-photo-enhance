@@ -1,5 +1,6 @@
 const fs = require('fs');
 const path = require('path');
+const { llmConfig } = require('./llm/provider');
 
 const REPO_ROOT = path.resolve(__dirname, '..', '..');
 const CONFIG_PATH = path.join(REPO_ROOT, 'config', 'config.json');
@@ -37,6 +38,9 @@ function loadConfig() {
     previewCacheDir: path.join(REPO_ROOT, '.webapp_cache', 'previews'),
     stateDir: path.join(REPO_ROOT, '.webapp_cache'),
     jobsStoreFile: path.join(REPO_ROOT, '.webapp_cache', 'jobs.json'),
+    // Version 2 Phase 4: AI correction (off unless config.llm.enabled is true).
+    llm: llmConfig(raw.llm),
+    correctionsDir: path.join(REPO_ROOT, '.webapp_cache', 'corrections'),
   };
 }
 

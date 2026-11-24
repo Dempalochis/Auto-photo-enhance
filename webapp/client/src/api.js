@@ -16,10 +16,11 @@ export const startPreview = (photo) => jsonFetch('/api/preview', {
   body: JSON.stringify({ photo }),
 });
 
-export const startRun = (files, preset, projectName) => jsonFetch('/api/run', {
+// Version 2 Phase 4: optional { aiCorrection: true, aiStrength: 'subtle'|'normal'|'punchy' }.
+export const startRun = (files, preset, projectName, ai) => jsonFetch('/api/run', {
   method: 'POST',
   headers: { 'Content-Type': 'application/json' },
-  body: JSON.stringify({ files, preset, projectName }),
+  body: JSON.stringify({ files, preset, projectName, ...(ai || {}) }),
 });
 
 export const getJob = (id) => jsonFetch(`/api/jobs/${id}`);

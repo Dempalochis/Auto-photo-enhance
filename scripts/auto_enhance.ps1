@@ -28,6 +28,11 @@ param(
     [Nullable[bool]]$ScanSubfolders,
     # Version 2 Phase 4: JSON file mapping raw path -> AI correction overlay (see below).
     [string]$CorrectionsJson,
+    # Version 2 Phase 4 (overlap): the web UI writes -CorrectionsJson entries while this script
+    # runs. With this switch, each file waits for its entry (Node writes an all-zero entry on
+    # timeout/failure), printing a "waiting_for_plan" event when it starts waiting.
+    [switch]$WaitForCorrections,
+    [int]$CorrectionsMaxWaitSec = 900,
     # Version 2 Phase 2: override config.batchRender for this run: "true" / "false" (a string, so
     # it also works through `powershell -File`, which can't pass a [bool]).
     [string]$BatchRender,
@@ -129,23 +134,55 @@ $presetLabel = if ($presetPath) { $Preset } else { "none" }
 # A file WITH an entry renders as <name>_ai[_<preset>].jpg, with the overlay (if any - an all-zero
 # or failed analysis has none) stacked after base/format overlay and before the preset. Without
 # -CorrectionsJson nothing here changes Version 1 behaviour (names, stack, CSV columns).
-$aiMap = $null
+$aiState = @{ Map = $null }
+function Read-AiMap {
+    # Always re-read (a few KB): mtime-based caching could miss an update on filesystems with
+    # coarse timestamps.
+    $aiRaw = $null
+    # Node rewrites the file atomically (temp + rename); a read can still race a rename on
+    # Windows, so a failed parse is retried on the next poll instead of failing the run.
+    try { $aiRaw = Get-Content -LiteralPath $CorrectionsJson -Raw | ConvertFrom-Json } catch { if ($null -eq $aiState.Map) { $aiState.Map = @{} }; return }
+    $m = @{}
+    if ($aiRaw) {
+        foreach ($prop in $aiRaw.PSObject.Properties) {
+            $v = $prop.Value
+            $entry = if ($v -is [string]) { [pscustomobject]@{ overlay = $v; summary = ""; scene = ""; note = "" } } else { $v }
+            if ($entry.overlay -and -not (Test-Path -LiteralPath $entry.overlay)) { Fail "AI overlay not found: $($entry.overlay)" }
+            $m[[System.IO.Path]::GetFullPath($prop.Name).ToLowerInvariant()] = $entry
+        }
+    }
+    $aiState.Map = $m
+}
 if ($CorrectionsJson) {
     if (-not (Test-Path -LiteralPath $CorrectionsJson)) { Fail "Corrections file not found: $CorrectionsJson" }
+    $aiRaw = $null
     try { $aiRaw = Get-Content -LiteralPath $CorrectionsJson -Raw | ConvertFrom-Json } catch { Fail "Failed to parse -CorrectionsJson (invalid JSON): $_" }
-    $aiMap = @{}
-    foreach ($prop in $aiRaw.PSObject.Properties) {
-        $v = $prop.Value
-        $entry = if ($v -is [string]) { [pscustomobject]@{ overlay = $v; summary = ""; scene = ""; note = "" } } else { $v }
-        if ($entry.overlay -and -not (Test-Path -LiteralPath $entry.overlay)) { Fail "AI overlay not found: $($entry.overlay)" }
-        $aiMap[[System.IO.Path]::GetFullPath($prop.Name).ToLowerInvariant()] = $entry
-    }
+    Read-AiMap
 }
 function Get-AiEntry([System.IO.FileInfo]$File) {
-    if (-not $aiMap) { return $null }
+    if ($null -eq $aiState.Map) { return $null }
     $k = $File.FullName.ToLowerInvariant()
-    if ($aiMap.ContainsKey($k)) { return $aiMap[$k] }
+    if ($aiState.Map.ContainsKey($k)) { return $aiState.Map[$k] }
     return $null
+}
+
+# Waits (with -WaitForCorrections) until the job's photo has an entry, then attaches it.
+function Wait-AiEntry($job) {
+    if ($null -eq $aiState.Map) { return }
+    $entry = Get-AiEntry $job.Arw
+    if (-not $entry -and $WaitForCorrections) {
+        Write-Host "Waiting for the AI analysis of $($job.Arw.Name)..."
+        Write-PipelineEvent "waiting_for_plan" @{ file = $job.Arw.FullName; index = $job.Index; total = $fileTotal }
+        $sw = [System.Diagnostics.Stopwatch]::StartNew()
+        while (-not $entry -and $sw.Elapsed.TotalSeconds -lt $CorrectionsMaxWaitSec) {
+            Start-Sleep -Milliseconds 250
+            Read-AiMap
+            $entry = Get-AiEntry $job.Arw
+        }
+    }
+    if (-not $entry) { $entry = [pscustomobject]@{ overlay = $null; summary = ""; scene = ""; note = "AI correction skipped: no plan" } }
+    $job.Ai = $entry
+    $job.AiOverlay = if ($entry.overlay) { $entry.overlay } else { $null }
 }
 
 # ---- Version 2 Phase 2: batched rendering (opt-in: config.batchRender / -BatchRender) ----
@@ -161,11 +198,12 @@ function New-FileJob([System.IO.FileInfo]$arw, [int]$index) {
     $outSubdir = if ($relSubfolder) { Join-Path $OutputDir $relSubfolder } else { $OutputDir }
     if ($relSubfolder) { New-Item -ItemType Directory -Force -Path $outSubdir | Out-Null }
     $ai = Get-AiEntry $arw
+    $aiRun = ($null -ne $aiState.Map)
     # No preset (plain color correction) keeps the original base name, unchanged from before
     # presets existed. A selected preset appends "_<preset>" so different looks rendered from the
     # same source photo land as separate files instead of overwriting each other. AI-corrected
     # renders add "_ai" so they never collide with (or get skipped because of) plain ones.
-    $nameBase = if ($ai) { "$($arw.BaseName)_ai" } else { $arw.BaseName }
+    $nameBase = if ($aiRun) { "$($arw.BaseName)_ai" } else { $arw.BaseName }
     $outBaseName = if ($presetPath) { "$($nameBase)_$Preset" } else { $nameBase }
     return [pscustomobject]@{
         Index = $index; Arw = $arw; OutSubdir = $outSubdir; OutFile = (Join-Path $outSubdir "$outBaseName.jpg")
@@ -179,7 +217,7 @@ function Add-Row($job, [hashtable]$row) {
     foreach ($k in @("Timestamp", "File", "Status", "ExitCode", "DurationSec", "ISO", "Profile", "Preset", "OutputPath", "Note")) {
         if ($row.ContainsKey($k)) { $o[$k] = $row[$k] }
     }
-    if ($aiMap) {
+    if ($null -ne $aiState.Map) {
         $o["AiCorrection"] = if ($job.Ai -and $job.Ai.summary) { $job.Ai.summary } elseif ($job.Ai) { "none" } else { "" }
         $o["AiScene"] = if ($job.Ai -and $job.Ai.scene) { $job.Ai.scene } else { "" }
     }
@@ -264,6 +302,7 @@ function Get-JobArgs($job, [string[]]$Inputs, [string]$Out) {
 # The Version 1 path: one rawtherapee-cli process for one file.
 function Invoke-SingleFileJob($job) {
     Resolve-JobProfiles $job
+    Wait-AiEntry $job
     Write-StartLine $job
     $rtArgs = Get-JobArgs $job @($job.Arw.FullName) $job.OutFile
 
@@ -303,6 +342,7 @@ if (-not $useBatch) {
     foreach ($job in $jobs) {
         if (Test-Path -LiteralPath $job.OutFile) { Write-Skipped $job; continue }
         Resolve-JobProfiles $job
+        Wait-AiEntry $job
         $job.Signature = Get-BatchSignature -ProfileStack (Get-RTProfileStack (Get-JobArgs $job @("x") "x")) -OutSubdir $job.OutSubdir -Mode "final"
         $todo.Add($job)
     }

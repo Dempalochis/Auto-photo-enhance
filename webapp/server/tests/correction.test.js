@@ -113,3 +113,19 @@ test('resolveBaseProfile mirrors the PowerShell ISO branching and format overlay
   // effective base: raf.pp3 overrides the white-balance setting
   assert.equal(effectiveBase(resolveBaseProfile(ctx, 'x.RAF', 100))['White Balance'].Setting, 'Camera');
 });
+
+test('integer-only RawTherapee keys are always written as whole numbers, at every strength', () => {
+  for (const strength of [0.5, 1, 1.5, 'subtle', 'punchy', 1.3]) {
+    for (const step of STEP_KEYS) {
+      for (const v of [-2, -1, 1, 2]) {
+        const { plan } = validatePlan({ adjustments: { [step]: v } });
+        const out = correctionToPp3(plan, defaultBase, { strength });
+        const row = CORRECTION_TABLE[step];
+        const value = parsePp3(out.text)[row.section][row.key];
+        if (row.integer) assert.match(value, /^-?\d+$/, `${step} ${v} @ ${strength} -> ${value}`);
+        const extra = out.sections['Shadows & Highlights'];
+        if (extra) for (const [k, x] of Object.entries(extra)) if (k !== 'Enabled') assert.ok(Number.isInteger(x), `S&H ${k}=${x}`);
+      }
+    }
+  }
+});

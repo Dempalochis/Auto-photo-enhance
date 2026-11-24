@@ -38,7 +38,8 @@ function correctionToPp3(plan, baseParsed, opts = {}) {
     const row = CORRECTION_TABLE[step];
     if (row.dropped) continue;
     const base = getNumber(baseParsed, row.section, row.key, row.base);
-    put(row.section, row.key, clamp(base + s * row.perStep * strength, row.min, row.max));
+    const v = clamp(base + s * row.perStep * strength, row.min, row.max);
+    put(row.section, row.key, row.integer ? Math.round(v) : v);
     if (row.enable) sections[row.section] = { Enabled: true, ...sections[row.section] };
     if (row.atTwo && row.atTwo.positive && s >= 2) {
       const x = row.atTwo.positive;

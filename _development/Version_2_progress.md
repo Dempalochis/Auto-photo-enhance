@@ -10,7 +10,7 @@ One entry per phase: what was done, what was skipped and why, deviations from th
 | 1 Pipeline foundations | ✅ done (2026-11-24) |
 | 2 Batched rendering + fault isolation | ✅ built, **off by default** (Linux gate: NO-GO) |
 | 3 Scene grouping (no LLM) | ✅ done (2026-11-24) |
-| 4 LLM core + AI correction | ⬜ not started |
+| 4 LLM core + AI correction | ✅ built, **off by default** (`llm.enabled: false`) |
 | 5 LLM scenes + review UI | ⬜ not started |
 | 6 Quality | ⬜ not started |
 | 7 Cloud providers | ⏸ on hold |
@@ -179,3 +179,62 @@ Deviations:
 - Scene view has no month level (plan: "day → scene → photos").
 
 Test status: server 221/221, client 116/116, Pester 55/55.
+
+## Phase 4: LLM core + per-photo AI correction ✅ (off by default)
+
+Done:
+- `llm/` provider interface, **Ollama** + **mock** adapters, one JSON schema, prompt + `PROMPT_VERSION`
+  (built in 0a). `llm` config block (`enabled: false`) in `config.example.json`, read by `config.js`.
+  `/api/health` gains `llm: { enabled, status: disabled|reachable|unreachable|model_missing, detail }`
+  (Ollama: `GET /api/tags`, model must be pulled). An enabled-but-unusable LLM is a health **warning**.
+  The server logs the LLM status at start-up.
+- Correction plan: `correctionPlan.js` (validate/clamp/all-zero), `correctionTable.js` (**no
+  noiseReduction/sharpening**, review note 3), `correctionToPp3.js` (absolute base + step x unit x
+  strength, read from the photo's actual base profile + format overlay), `presetKeyOwnership.test.js`.
+- `correctionsCache.js`: plans keyed by photo (path+size+mtime) + provider + model + prompt version +
+  input kind + base-profile fingerprint. User edits are stored separately and always win.
+  **Content-addressed overlays** `pp3/<sha1>.pp3`. Drafts. Per-run `-CorrectionsJson` files.
+- `analyze` lane: `analyzer.js` (edit > cache > LLM; input image per `llm.inputImage`, draft renders
+  through the new **`scripts/render_draft.ps1`** = `Build-RTArgs -Mode draft`, one at a time, draft failure
+  → embedded fallback; `llm.concurrency` workers; one retry on a non-JSON reply).
+  `auto` = embedded JPEG while a run is rendering, else draft render.
+- Pipeline: `auto_enhance.ps1 -CorrectionsJson <file>` → overlay after base/format, before preset;
+  AI runs named `<name>_ai[_<preset>].jpg` (also `outputFileFor(..., {ai})` for cancel cleanup); CSV
+  columns `AiCorrection`, `AiScene` (only in AI runs); `-WaitForCorrections`.
+- **Overlap** (task 6): `planBoard.js`. The run's AI analysis is queued in the `analyze` lane in render
+  order. The script waits per photo and prints `waiting_for_plan`, and only then does Node start that photo's
+  `llm.planWaitMs` timer. A failed analysis gives an all-zero entry at once. On timeout: all-zero +
+  note. Cached/edited plans are on the board before rendering starts.
+- UI: **AI-guided correction** toggle + **Subtle / Normal / Punchy** dial in `RunPanel` (only when
+  `health.llm` is enabled and reachable; otherwise a one-line reason). Choice remembered. Job queue shows
+  "· AI (strength)" and labels analyze jobs.
+- Endpoints: `POST /api/analyze`, `GET/PUT/DELETE /api/corrections?path=`, `aiCorrection`/`aiStrength`
+  in `/api/run` (and kept on retry).
+- Tests: node `aiOverlap.test.js` (slow photo 3 doesn't time out 4–20; fast provider never waits; dead
+  provider → all-zero immediately; timer starts at the photo; cache/edits; non-JSON retry),
+  `correction.test.js` (+ integer keys); Pester `aiCorrection.Tests.ps1` (stack order, naming, CSV,
+  null overlay, no-JSON = Version 1, wait + give-up); Integration: every step at ±2 x every strength renders.
+- **Live checks** (real server + pwsh + RawTherapee): mock-provider AI run → `_ai_teal_orange.jpg` files;
+  Ollama on a dead port → normal renders named `_ai`, note in job/CSV/health, never a failed job;
+  **real Ollama `qwen3.5:2b`** AI run of 2 photos → 73–78 s per analysis on CPU (embedded input), photo 2's
+  plan arrived while photo 1 rendered, both rendered with their overlays.
+
+Bugs found and fixed while testing for real:
+- **Fractional values for integer keys** (`HighlightCompr=34.5` at strength 1.5) made RawTherapee reject
+  the whole overlay. Table rows now carry `integer: true`. Unit test + real-CLI integration test cover
+  every step x strength.
+
+Deviations:
+- **Render limiter:** analyze-side draft renders are limited to one process, and `inputImage: auto` uses the
+  embedded JPEG during a run (plan review note 11). Limiting the *preview* lane while a run is
+  active would change Version 1 preview behaviour, so it is opt-in: `previewConcurrencyWhileRunning`
+  (unset = Version 1's 3).
+- **Batching + AI:** with `batchRender: true`, the script waits for **all** plans before grouping, instead
+  of per batch. Overlap within a batched AI run is lost. Both features are off by default, and per-photo
+  overlays rarely share a signature anyway (plan review note 3).
+- The embedded JPEG is sent at its native size (Sony: 1616x1080). Node has no image library, so
+  `maxImagePx` is not applied. On CPU that makes embedded analysis 2–4x slower than a draft render.
+- Phase 5 groundwork in the same commit: `sceneGrouper.js`, `llm/scenePrompt.js`, `refineScenes` in
+  `aiService.js` (+ `sceneGrouper.test.js`).
+
+Test status: server 235/235, client 119/119, Pester 62/62 (incl. 6 Integration against RawTherapee 5.10).

@@ -28,6 +28,9 @@ const { canRetry, resolveRetryFiles } = require('./jobRetry');
 const { previewFingerprint, isPreviewManifestFresh } = require('./previewCache');
 const { createRunProgressHandler, createPreviewProgressHandler } = require('./runEvents');
 const { listProjects } = require('./projectBrowser');
+const { createAiService } = require('./aiService');
+const { mergeUserEdits, validatePlan, summarizePlan } = require('./correctionPlan');
+const { photoKey } = require('./correctionsCache');
 
 const cfg = loadConfig();
 const psOpts = { powershellPath: cfg.powershellPath };
@@ -81,6 +84,14 @@ initJobStore(cfg.jobsStoreFile);
 // cryptic failure the first time a preview or run is attempted. Deliberately does not refuse to
 // start - see checkStartupConfig's own comment for why.
 const startupCheck = checkStartupConfig(cfg);
+
+// Version 2 Phase 4: LLM provider, analyze lane, AI runs. Inert while llm.enabled is false.
+const ai = createAiService({
+  cfg, enqueue, listExecutionOrder, runPowerShellScript, psOpts, getJob, cancelJob,
+});
+if (cfg.llm.enabled) {
+  ai.llmHealth().then((h) => console.log(`[server] LLM: ${h.provider} ${h.model} -> ${h.status} (${h.detail})`));
+}
 if (startupCheck.errors.length > 0) {
   console.error('[server] Configuration problems found at startup:');
   startupCheck.errors.forEach((e) => console.error(`[server]   ERROR: ${e}`));
@@ -177,9 +188,16 @@ function listPresetNames() {
 // Surfaces the same startup-config findings over the API (not just the console) so the UI
 // could show a banner for a broken rtPath etc. instead of a confusing failure only once the
 // user tries to preview or run something.
-app.get('/api/health', (req, res) => {
-  res.json({ ok: startupCheck.errors.length === 0, errors: startupCheck.errors, warnings: startupCheck.warnings });
-});
+app.get('/api/health', asyncHandler(async (req, res) => {
+  // Version 2: `llm` = { enabled, status: disabled|reachable|unreachable|model_missing, ... }.
+  // An enabled-but-unusable LLM is a warning (runs still work, without AI correction).
+  const llm = await ai.llmHealth();
+  const warnings = [...startupCheck.warnings];
+  if (llm.enabled && llm.status !== 'reachable') warnings.push(`AI correction unavailable: ${llm.detail}`);
+  res.json({
+    ok: startupCheck.errors.length === 0, errors: startupCheck.errors, warnings, llm,
+  });
+}));
 
 // ---- source folder: where photos are read from, changeable at runtime from the UI ----
 // (a browser can't hand JS a real absolute filesystem path from any native picker, so the
@@ -334,6 +352,10 @@ app.post('/api/preview', (req, res) => {
 
     if (!cached) {
       const args = ['-SourceFile', sourceFile, '-OutputDir', cacheDir, '-ConfigPath', cfg.configPath, '-EmitEvents'];
+      // Version 2 render limiter (opt-in): fewer concurrent preview renders while a batch run is
+      // rendering. Unset (default) = Version 1's 3 concurrent preview renders.
+      const limit = cfg.raw.previewConcurrencyWhileRunning;
+      if (Number.isInteger(limit) && limit >= 1 && listExecutionOrder('run')[0]) args.push('-MaxConcurrency', String(limit));
       const scriptPath = path.join(cfg.scriptsDir, 'preview_presets.ps1');
 
       // Tile events first, Version 1 "Rendering/Rendered/FAILED rendering" lines as fallback.
@@ -417,9 +439,10 @@ app.post('/api/scenes/detect', (req, res) => {
   res.json({ jobId: job.id });
 });
 
-// Phase 3: code-only names. Phase 5 replaces this with the LLM merge/split/naming step.
-async function refineScenes(plan) {
-  return { scenes: scenesStore.autoScenesFromSegments(plan.segments), llm: 'off', notes: [] };
+// Phase 5: LLM merge/split/naming when scenes.useLlm (default) and the LLM is enabled and
+// reachable; otherwise (and on any failure) the Phase 3 code segments, named by time range.
+async function refineScenes(plan, photos, job) {
+  return ai.refineScenes(plan, photos.map((p) => ({ ...p, root: activePhotosDir })), job);
 }
 
 async function editScenes(req, res, op) {
@@ -440,6 +463,76 @@ app.post('/api/scenes/:id/split', asyncHandler(async (req, res) => editScenes(re
   (store, byRel) => scenesStore.splitScene(store, req.params.id, req.body && req.body.afterRelPath, byRel))));
 app.post('/api/scenes/move', asyncHandler(async (req, res) => editScenes(req, res,
   (store, byRel) => scenesStore.moveToScene(store, req.body && req.body.relPaths, req.body && req.body.toId, byRel))));
+
+// ---- Version 2 Phase 4/5: AI analysis and per-photo corrections ----
+
+function resolveFilesOr400(files, res) {
+  if (!Array.isArray(files) || files.length === 0) { res.status(400).json({ error: 'files must be a non-empty array' }); return null; }
+  const abs = [];
+  for (const f of files) {
+    const r = isSafeRelPath(f) ? resolvePhotoPath(f) : null;
+    if (!r || !fs.existsSync(r)) { res.status(400).json({ error: `invalid or missing file: ${f}` }); return null; }
+    abs.push(r);
+  }
+  return abs;
+}
+
+// Analyze for review: { files, inputImage?: 'draftRender'|'embedded', force?: true } -> { jobId }.
+app.post('/api/analyze', (req, res) => {
+  if (!cfg.llm.enabled) return res.status(400).json({ error: 'AI correction is switched off (llm.enabled is false in config/config.json)' });
+  const { files, inputImage, force } = req.body || {};
+  const absoluteFiles = resolveFilesOr400(files, res);
+  if (!absoluteFiles) return undefined;
+  const job = ai.startAnalyzeJob({
+    files, absoluteFiles, inputImage, force,
+  });
+  return res.json({ jobId: job.id });
+});
+
+async function photoForRel(relPath) {
+  if (!isSafeRelPath(relPath)) return null;
+  const abs = resolvePhotoPath(relPath);
+  if (!abs || !fs.existsSync(abs)) return null;
+  const [photo] = await ai.describeFiles([relPath], [abs]);
+  return photo;
+}
+
+// The plan the app would use for one photo: { plan, source: 'edit'|'cache'|null, llmPlan, meta }.
+app.get('/api/corrections', asyncHandler(async (req, res) => {
+  const photo = await photoForRel(req.query.path);
+  if (!photo) return res.status(400).json({ error: 'invalid photo path' });
+  const found = ai.lookupForReview(photo);
+  if (!found.plan) return res.status(404).json({ error: 'no plan for this photo yet - run Analyze first' });
+  return res.json({
+    path: photo.relPath,
+    plan: found.plan,
+    summary: summarizePlan(found.plan),
+    source: found.source,
+    llmPlan: found.source === 'edit' ? (found.llmPlan && found.llmPlan.plan) || null : found.plan,
+    meta: found.meta || (found.llmPlan && found.llmPlan.meta) || null,
+  });
+}));
+
+// Save the user's edit of a plan: { adjustments: { exposure: 1, ... } }. Edits always win.
+app.put('/api/corrections', asyncHandler(async (req, res) => {
+  const photo = await photoForRel(req.query.path);
+  if (!photo) return res.status(400).json({ error: 'invalid photo path' });
+  const body = req.body || {};
+  if (!body.adjustments || typeof body.adjustments !== 'object') return res.status(400).json({ error: 'adjustments object is required' });
+  const found = ai.lookupForReview(photo);
+  const basePlan = found.source === 'edit' ? found.plan : (found.plan || validatePlan({ adjustments: {} }).plan);
+  const plan = mergeUserEdits(basePlan, { adjustments: body.adjustments });
+  ai.cache.putEdit(photoKey(photo.abs, photo.size, photo.mtime), { plan, path: photo.relPath, updatedAt: Date.now() });
+  return res.json({ path: photo.relPath, plan, summary: summarizePlan(plan), source: 'edit' });
+}));
+
+// Drop the user's edit: back to the LLM's plan.
+app.delete('/api/corrections', asyncHandler(async (req, res) => {
+  const photo = await photoForRel(req.query.path);
+  if (!photo) return res.status(400).json({ error: 'invalid photo path' });
+  ai.cache.deleteEdit(photoKey(photo.abs, photo.size, photo.mtime));
+  return res.json({ ok: true });
+}));
 
 // ---- run: batch-convert selected files with color correction + chosen preset ----
 
@@ -467,10 +560,12 @@ function queuedAheadPhotoCount() {
 // cleanup) - shared between a fresh POST /api/run and a POST /api/jobs/:id/retry, since both
 // queue exactly the same kind of work, just sourced from a fresh request vs. a job's saved meta.
 function makeRunJobFn({
-  files, absoluteFiles, outputDir, logDir, preset, photosRoot, folderName, aiCorrection = false,
+  files, absoluteFiles, outputDir, logDir, preset, photosRoot, folderName, aiCorrection = false, aiStrength = 'normal',
 }) {
   return async (job) => {
     job.progress = { total: files.length, items: files.map((relPath) => ({ name: relPath, status: 'pending' })) };
+    // Version 2 Phase 4: AI-guided correction for this run (plans handed over as they're ready).
+    const aiRun = aiCorrection ? await ai.prepareAiRun(job, { files, absoluteFiles, strength: aiStrength }) : null;
 
     const args = [
       '-OutputDir', outputDir,
@@ -481,6 +576,7 @@ function makeRunJobFn({
       '-EmitEvents',
     ];
     if (preset && preset !== 'none') args.push('-Preset', preset);
+    if (aiRun) args.push(...aiRun.extraArgs);
 
     const scriptPath = path.join(cfg.scriptsDir, 'auto_enhance.ps1');
     // Version 2 Phase 1: @@EVENT lines first (index = position in -FilesJson, so this stays
@@ -493,6 +589,11 @@ function makeRunJobFn({
           const item = job.progress.items[evt.index];
           if (item) item.output = evt.output;
         }
+        if (evt.event === 'waiting_for_plan') {
+          const item = job.progress.items[evt.index];
+          if (item) item.status = 'waiting';
+        }
+        if (aiRun) aiRun.onEvent(evt);
       },
     });
     // Reads `current` at cancellation time (closure over the same `let`), not just at setup
@@ -518,7 +619,10 @@ function makeRunJobFn({
     progress.flush();
 
     finalizeProgressItems(job.progress.items, { cancelled: job.cancelRequested });
-    return { outputDir, folderName, exitCode, ...progress.summary() };
+    const aiResult = aiRun ? aiRun.finish() : {};
+    return {
+      outputDir, folderName, exitCode, ...progress.summary(), ...aiResult,
+    };
   };
 }
 
@@ -529,7 +633,9 @@ app.get('/api/projects', (req, res) => {
 });
 
 app.post('/api/run', asyncHandler(async (req, res) => {
-  const { files, preset, projectName } = req.body || {};
+  const {
+    files, preset, projectName, aiCorrection, aiStrength,
+  } = req.body || {};
   if (!Array.isArray(files) || files.length === 0) {
     return res.status(400).json({ error: 'files must be a non-empty array' });
   }
@@ -546,6 +652,12 @@ app.post('/api/run', asyncHandler(async (req, res) => {
     return res.status(400).json({ error: `unknown preset: ${preset}` });
   }
 
+  // Version 2 Phase 4: opt-in AI correction. Refused only when switched off in config; an
+  // unreachable LLM does NOT fail the run (every photo then renders without AI, with a note).
+  const wantsAi = aiCorrection === true;
+  if (wantsAi && !cfg.llm.enabled) return res.status(400).json({ error: 'AI correction is switched off (llm.enabled is false in config/config.json)' });
+  const strength = ['subtle', 'normal', 'punchy'].includes(aiStrength) ? aiStrength : 'normal';
+
   const folderName = projectFolderName(projectName);
   const outputDir = path.join(cfg.projectsDir, folderName);
   const logDir = path.join(outputDir, '_logs');
@@ -555,8 +667,10 @@ app.post('/api/run', asyncHandler(async (req, res) => {
   const spaceWarning = checkDiskSpaceWarning(freeBytes, files.length, queuedAheadPhotoCount());
 
   const job = enqueue('run', makeRunJobFn({
-    files, absoluteFiles, outputDir, logDir, preset, photosRoot: activePhotosDir, folderName,
+    files, absoluteFiles, outputDir, logDir, preset, photosRoot: activePhotosDir, folderName, aiCorrection: wantsAi, aiStrength: strength,
   }), {
+    aiCorrection: wantsAi,
+    aiStrength: wantsAi ? strength : undefined,
     projectName: sanitizeProjectName(projectName),
     preset: preset && preset !== 'none' ? preset : 'none',
     photoCount: files.length,
@@ -709,7 +823,7 @@ app.post('/api/jobs/:id/retry', asyncHandler(async (req, res) => {
   if (!filesCheck.ok) return res.status(400).json({ error: filesCheck.error });
 
   const {
-    preset, outputDir, folderName, sourceFolder, projectName, files,
+    preset, outputDir, folderName, sourceFolder, projectName, files, aiCorrection, aiStrength,
   } = job.meta;
   const availablePresets = listPresetNames();
   if (preset && preset !== 'none' && !availablePresets.includes(preset)) {
@@ -722,7 +836,10 @@ app.post('/api/jobs/:id/retry', asyncHandler(async (req, res) => {
 
   const newJob = enqueue('run', makeRunJobFn({
     files, absoluteFiles: filesCheck.absoluteFiles, outputDir, logDir, preset, photosRoot: sourceFolder, folderName,
+    aiCorrection: aiCorrection === true && cfg.llm.enabled, aiStrength,
   }), {
+    aiCorrection: aiCorrection === true && cfg.llm.enabled,
+    aiStrength,
     projectName,
     preset: preset || 'none',
     photoCount: files.length,

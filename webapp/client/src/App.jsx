@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import * as Tooltip from '@radix-ui/react-tooltip';
 import {
-  getPhotos, getPresets, getSourceFolder, setSourceFolder, startPreview, startRun, getScenes, detectScenes,
+  getPhotos, getPresets, getSourceFolder, setSourceFolder, startPreview, startRun, getScenes, detectScenes, getHealth,
 } from './api';
 import { useJob } from './useJob';
 import SourceFolderPicker from './components/SourceFolderPicker';
@@ -15,6 +15,8 @@ import ProjectBrowser from './components/ProjectBrowser';
 const PROJECT_NAME_KEY = 'ape.lastProjectName';
 const PRESET_KEY = 'ape.lastPreset';
 const PREVIEW_PHOTO_KEY = 'ape.lastPreviewPhoto';
+const AI_KEY = 'ape.aiCorrection';
+const AI_STRENGTH_KEY = 'ape.aiStrength';
 
 export default function App() {
   const [sourceFolder, setSourceFolderState] = useState('');
@@ -38,6 +40,23 @@ export default function App() {
   const [runStarting, setRunStarting] = useState(false);
 
   const previewJob = useJob(previewJobId);
+  // Version 2 Phase 4: LLM status (from /api/health) and the run's AI options.
+  const [llm, setLlm] = useState(null);
+  const [aiCorrection, setAiCorrection] = useState(() => localStorage.getItem(AI_KEY) === 'true');
+  const [aiStrength, setAiStrength] = useState(() => localStorage.getItem(AI_STRENGTH_KEY) || 'normal');
+  useEffect(() => { localStorage.setItem(AI_KEY, String(aiCorrection)); }, [aiCorrection]);
+  useEffect(() => { localStorage.setItem(AI_STRENGTH_KEY, aiStrength); }, [aiStrength]);
+  useEffect(() => {
+    let cancelled = false;
+    let timer;
+    const poll = () => getHealth()
+      .then((h) => { if (!cancelled) setLlm(h.llm || null); })
+      .catch(() => {})
+      .finally(() => { if (!cancelled) timer = setTimeout(poll, 15000); });
+    poll();
+    return () => { cancelled = true; clearTimeout(timer); };
+  }, []);
+  const aiUsable = Boolean(llm && llm.enabled && llm.status === 'reachable');
   // Version 2 Phase 3: scene groups for the active folder + the "Find scenes" job.
   const [scenes, setScenes] = useState([]);
   const [scenesJobId, setScenesJobId] = useState(null);
@@ -167,7 +186,8 @@ export default function App() {
     if (runStarting) return;
     setRunStarting(true);
     try {
-      const result = await startRun(Array.from(selected), selectedPreset, projectName);
+      const result = await startRun(Array.from(selected), selectedPreset, projectName,
+        aiUsable && aiCorrection ? { aiCorrection: true, aiStrength } : undefined);
       // Clear the selection once a batch is queued - the natural next step in this flow is
       // picking a *different* set of photos to queue as the next job, not re-running the same
       // selection. Preset/project-name choices are left as-is since those often stay the same
@@ -245,6 +265,11 @@ export default function App() {
                 onRun={handleRun}
                 canRun={selected.size > 0}
                 runStarting={runStarting}
+                llm={llm}
+                aiCorrection={aiCorrection}
+                onAiCorrectionChange={setAiCorrection}
+                aiStrength={aiStrength}
+                onAiStrengthChange={setAiStrength}
               />
             </div>
             <JobQueuePanel />

@@ -17,6 +17,8 @@
 //   perStep       change per +1 step
 //   min/max       clamp of the final absolute value
 //   atTwo         optional extra keys written only when |step| reaches 2 in that direction
+//   integer       RawTherapee only accepts whole numbers for this key (a fractional value makes
+//                 it reject the whole profile - found in Phase 4 with strength 1.5)
 //   dropped       true = the step is accepted from the LLM but has no effect (see note)
 
 const TABLE_STATUS = 'uncalibrated';
@@ -24,17 +26,17 @@ const TABLE_STATUS = 'uncalibrated';
 const CORRECTION_TABLE = {
   exposure: { section: 'Exposure', key: 'Compensation', base: 0.25, perStep: 0.3, min: -3, max: 3 },
   highlights: {
-    section: 'Exposure', key: 'HighlightCompr', base: 12, perStep: 15, min: 0, max: 200,
+    section: 'Exposure', key: 'HighlightCompr', base: 12, perStep: 15, min: 0, max: 200, integer: true,
     atTwo: { positive: { section: 'Shadows & Highlights', key: 'Highlights', value: 20 } },
   },
   shadows: {
-    section: 'Exposure', key: 'ShadowCompr', base: 35, perStep: 12, min: 0, max: 100,
+    section: 'Exposure', key: 'ShadowCompr', base: 35, perStep: 12, min: 0, max: 100, integer: true,
     atTwo: { positive: { section: 'Shadows & Highlights', key: 'Shadows', value: 20 } },
   },
-  contrast: { section: 'Exposure', key: 'Contrast', base: 0, perStep: 10, min: -100, max: 100 },
+  contrast: { section: 'Exposure', key: 'Contrast', base: 0, perStep: 10, min: -100, max: 100, integer: true },
   clarity: { section: 'Local Contrast', key: 'Amount', base: 0.08, perStep: 0.06, min: 0, max: 1, enable: true },
-  dehaze: { section: 'Dehaze', key: 'Strength', base: 6, perStep: 10, min: -100, max: 100, enable: true },
-  saturation: { section: 'Exposure', key: 'Saturation', base: 0, perStep: 8, min: -100, max: 100 },
+  dehaze: { section: 'Dehaze', key: 'Strength', base: 6, perStep: 10, min: -100, max: 100, enable: true, integer: true },
+  saturation: { section: 'Exposure', key: 'Saturation', base: 0, perStep: 8, min: -100, max: 100, integer: true },
   // Warmth: [White Balance] Equal (RawTherapee's blue/red equaliser, 1 = neutral, > 1 = warmer).
   // Measured in Phase 0a (RT 5.10, Linux, a7M3 draft): Equal 1.1 -> mean R +18 / B -6, 0.9 the
   // reverse; auto-ITC stays in charge. The plan's TemperatureBias had NO effect under

@@ -135,3 +135,23 @@ Describe "Batched rendering against the real CLI" -Tag "Integration" {
         @(Get-ChildItem -LiteralPath $out -Force | Where-Object { $_.Name -like ".rt_batch_*" }).Count | Should -Be 0
     }
 }
+
+Describe "AI overlays against the real CLI" -Tag "Integration" {
+    It "every step at -2 and +2, at every strength, produces an overlay RawTherapee accepts" -Skip:$Skip {
+        $node = (Get-Command node, node.exe -ErrorAction SilentlyContinue | Select-Object -First 1).Source
+        if (-not $node) { Set-ItResult -Skipped -Because "node not found"; return }
+        $ovDir = Join-Path $Work "overlays"
+        $gen = Join-Path $Root "scripts/dev/write_extreme_overlays.js"
+        & $node $gen $ovDir | Out-Null
+        $files = @(Get-ChildItem -LiteralPath $ovDir -Filter *.pp3)
+        $files.Count | Should -BeGreaterThan 10
+        $bad = @()
+        foreach ($f in $files) {
+            $out = Join-Path $Work "ov_$($f.BaseName).jpg"
+            $a = Build-RTArgs -Mode draft -Base $Base -AiOverlay $f.FullName -DraftOverride $Draft -Inputs @($Sample) -Out $out
+            $r = Invoke-RawTherapee -RTPath $RT -RTArgs $a
+            if ($r.ExitCode -ne 0 -or -not (Test-Path $out) -or $r.Stdout -match "cannot be interpreted|Usage:") { $bad += "$($f.Name): exit $($r.ExitCode)" }
+        }
+        $bad | Should -BeNullOrEmpty
+    }
+}

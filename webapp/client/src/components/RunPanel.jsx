@@ -16,9 +16,23 @@ function formatSize(bytes) {
   return mb >= 1024 ? `${(mb / 1024).toFixed(2)} GB` : `${mb.toFixed(0)} MB`;
 }
 
+const STRENGTHS = [
+  { id: 'subtle', label: 'Subtle', hint: 'Half of every AI adjustment (x0.5).' },
+  { id: 'normal', label: 'Normal', hint: 'The AI adjustments as proposed (x1).' },
+  { id: 'punchy', label: 'Punchy', hint: 'One and a half times every AI adjustment (x1.5).' },
+];
+
+// Version 2 Phase 4: the AI toggle only shows when the server reports an enabled, reachable LLM.
+export function aiAvailable(llm) {
+  return Boolean(llm && llm.enabled && llm.status === 'reachable');
+}
+
 export default function RunPanel({
   projectName, onProjectNameChange, selectedPhotos, selectedPreset, onRun, canRun, runStarting,
+  llm = null, aiCorrection = false, onAiCorrectionChange = () => {}, aiStrength = 'normal', onAiStrengthChange = () => {},
 }) {
+  const showAi = aiAvailable(llm);
+  const aiOn = showAi && aiCorrection;
   const folderName = `${sanitize(projectName)}_${todayStr()}`;
   const totalSize = selectedPhotos.reduce((sum, p) => sum + p.size, 0);
 
@@ -84,7 +98,41 @@ export default function RunPanel({
         <p className="text-sm text-[var(--text-dim)]">
           Preset: <span className="text-[var(--text)]">{selectedPreset === 'none' ? 'none (color correction only)' : selectedPreset || '—'}</span>
         </p>
+        {aiOn && (
+          <p className="text-sm text-[var(--text-dim)]">
+            AI correction: <span className="text-[var(--text)]">{aiStrength}</span> · files named <span className="timestamp">name_ai{selectedPreset && selectedPreset !== 'none' ? `_${selectedPreset}` : ''}.jpg</span>
+          </p>
+        )}
       </div>
+
+      {llm && llm.enabled && !showAi && (
+        <p className="text-xs text-[var(--amber)] mb-3">AI correction unavailable: {llm.detail}</p>
+      )}
+      {showAi && (
+        <div className="panel px-3 py-2.5 mb-4 space-y-2" data-testid="ai-panel">
+          <label className="flex items-center gap-2 text-sm cursor-pointer">
+            <input type="checkbox" checked={aiCorrection} onChange={(e) => onAiCorrectionChange(e.target.checked)} />
+            <Hint text={`A local vision model (${llm.model}) fine-tunes each photo's base correction - exposure, highlights, shadows, contrast, clarity, dehaze, saturation, white balance - before your preset is applied. Output files get "_ai" in their name. If the model is slow or fails, that photo renders normally.`}>
+              AI-guided correction
+            </Hint>
+          </label>
+          {aiCorrection && (
+            <div className="flex gap-1.5" role="group" aria-label="AI strength">
+              {STRENGTHS.map((st) => (
+                <Hint key={st.id} text={st.hint}>
+                  <button
+                    type="button"
+                    onClick={() => onAiStrengthChange(st.id)}
+                    className={`btn-secondary text-xs px-2.5 py-1 ${aiStrength === st.id ? 'active' : ''}`}
+                  >
+                    {st.label}
+                  </button>
+                </Hint>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
 
       <button
         type="button"

@@ -100,3 +100,36 @@ describe('RunPanel', () => {
     expect(screen.queryByText(/Queued/)).not.toBeInTheDocument();
   });
 });
+
+describe('RunPanel - Version 2 AI correction', () => {
+  const llmOk = { enabled: true, status: 'reachable', model: 'qwen3.5:9b', detail: 'ok' };
+
+  test('no AI controls without an enabled, reachable LLM (Version 1 panel)', () => {
+    renderRunPanel({ ...baseProps, onRun: vi.fn() });
+    expect(screen.queryByText('AI-guided correction')).not.toBeInTheDocument();
+    renderRunPanel({ ...baseProps, onRun: vi.fn(), llm: { enabled: false, status: 'disabled' } });
+    expect(screen.queryByText('AI-guided correction')).not.toBeInTheDocument();
+  });
+
+  test('an enabled but unreachable LLM shows why, without the toggle', () => {
+    renderRunPanel({ ...baseProps, onRun: vi.fn(), llm: { enabled: true, status: 'unreachable', detail: 'cannot reach Ollama' } });
+    expect(screen.getByText(/AI correction unavailable: cannot reach Ollama/)).toBeInTheDocument();
+    expect(screen.queryByText('AI-guided correction')).not.toBeInTheDocument();
+  });
+
+  test('toggle and strength dial call back; the dial only shows when the toggle is on', async () => {
+    const user = userEvent.setup();
+    const onAiCorrectionChange = vi.fn();
+    const onAiStrengthChange = vi.fn();
+    const { rerender } = renderRunPanel({
+      ...baseProps, onRun: vi.fn(), llm: llmOk, aiCorrection: false, onAiCorrectionChange, onAiStrengthChange,
+    });
+    expect(screen.queryByRole('group', { name: 'AI strength' })).not.toBeInTheDocument();
+    await user.click(screen.getByRole('checkbox'));
+    expect(onAiCorrectionChange).toHaveBeenCalledWith(true);
+    rerender(<Tooltip.Provider><RunPanel {...baseProps} onRun={vi.fn()} llm={llmOk} aiCorrection aiStrength="normal" onAiCorrectionChange={onAiCorrectionChange} onAiStrengthChange={onAiStrengthChange} /></Tooltip.Provider>);
+    await user.click(screen.getByRole('button', { name: 'Punchy' }));
+    expect(onAiStrengthChange).toHaveBeenCalledWith('punchy');
+    expect(screen.getByText(/name_ai\.jpg/)).toBeInTheDocument();
+  });
+});

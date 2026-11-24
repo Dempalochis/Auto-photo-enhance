@@ -23,5 +23,21 @@
     "splitByCamera": true,
     "useLlm": true,
     "harmonizeCorrections": true
+  },
+  "llm": {
+    "enabled": false,
+    "provider": "ollama",
+    "model": "qwen3.5:9b",
+    "baseUrl": "http://localhost:11434",
+    "inputImage": "auto",
+    "strength": 1.0,
+    "timeoutMs": 60000,
+    "planWaitMs": null,
+    "concurrency": 1,
+    "refinePass": false,
+    "histogramStats": false,
+    "burstReuse": true,
+    "keepAlive": "10m",
+    "temperature": 0.2
   }
 }
