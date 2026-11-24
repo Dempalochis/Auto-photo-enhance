@@ -415,6 +415,17 @@ function Test-FileUnlocked([string]$Path) {
   Returns { ExitCode, Stdout }. The exit code is informational only: per-file success is decided
   by which outputs exist (fault isolation in auto_enhance.ps1).
 #>
+# Reads a text file another process is still writing (Windows: a plain ReadAllText can hit a
+# sharing violation; this opens it with FileShare.ReadWrite). Returns "" if it can't be read.
+function Read-SharedText([string]$Path) {
+    try {
+        $fs = New-Object System.IO.FileStream($Path, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, [System.IO.FileShare]::ReadWrite)
+        try { $sr = New-Object System.IO.StreamReader($fs); return $sr.ReadToEnd() } finally { $fs.Dispose() }
+    } catch {
+        return ""
+    }
+}
+
 function Invoke-RawTherapeeBatch {
     param([string]$RTPath, [string[]]$RTArgs, [string]$TempDir, [string[]]$Stems,
         [string]$ProgressSource = "outputFolder", [scriptblock]$OnFileReady, [int]$PollMs = 250)
@@ -427,8 +438,7 @@ function Invoke-RawTherapeeBatch {
     while (-not $proc.HasExited) {
         Start-Sleep -Milliseconds $PollMs
         if ($ProgressSource -eq "stdout") {
-            $text = ""
-            try { $text = [System.IO.File]::ReadAllText($stdoutFile) } catch { $text = "" }
+            $text = Read-SharedText $stdoutFile
             $n = ([regex]::Matches($text, '(?m)^Processing: ')).Count
             if ($n -gt $processingSeen) {
                 $processingSeen = $n
@@ -445,7 +455,6 @@ function Invoke-RawTherapeeBatch {
     }
     $proc.WaitForExit()
     foreach ($stem in (Get-ReadyBatchOutputs -TempDir $TempDir -Stems $Stems -State $state -Final)) { & $OnFileReady $stem }
-    $out = ""
-    try { $out = [System.IO.File]::ReadAllText($stdoutFile) } catch { $out = "" }
+    $out = Read-SharedText $stdoutFile
     return [pscustomobject]@{ ExitCode = $proc.ExitCode; Stdout = $out }
 }

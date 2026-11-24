@@ -141,7 +141,7 @@ function Read-AiMap {
     $aiRaw = $null
     # Node rewrites the file atomically (temp + rename); a read can still race a rename on
     # Windows, so a failed parse is retried on the next poll instead of failing the run.
-    try { $aiRaw = Get-Content -LiteralPath $CorrectionsJson -Raw | ConvertFrom-Json } catch { if ($null -eq $aiState.Map) { $aiState.Map = @{} }; return }
+    try { $aiRaw = (Read-SharedText $CorrectionsJson) | ConvertFrom-Json } catch { if ($null -eq $aiState.Map) { $aiState.Map = @{} }; return }
     $m = @{}
     if ($aiRaw) {
         foreach ($prop in $aiRaw.PSObject.Properties) {

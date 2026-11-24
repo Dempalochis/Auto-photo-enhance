@@ -63,7 +63,18 @@ function createCorrectionsCache(rootDir) {
     },
     draftPath: (pk, baseFp, overlayHash) => path.join(dirs.drafts, `${pk}_${baseFp}${overlayHash ? `_ai_${overlayHash.slice(0, 12)}` : ''}.jpg`),
     runFile: (jobId) => path.join(dirs.runs, `${jobId}.json`),
-    writeRunFile: (jobId, map) => atomicWriteFileSync(path.join(dirs.runs, `${jobId}.json`), JSON.stringify(map, null, 2)),
+    // auto_enhance.ps1 polls this file while Node rewrites it. On Windows the rename can fail
+    // for a moment (EPERM/EBUSY) while PowerShell has it open, so retry briefly.
+    writeRunFile(jobId, map) {
+      const file = path.join(dirs.runs, `${jobId}.json`);
+      const data = JSON.stringify(map, null, 2);
+      for (let attempt = 1; ; attempt += 1) {
+        try { atomicWriteFileSync(file, data); return; } catch (err) {
+          if (attempt >= 20 || !['EPERM', 'EBUSY', 'EACCES'].includes(err.code)) throw err;
+          Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 25);
+        }
+      }
+    },
   };
 }
 

@@ -314,3 +314,47 @@ Not done / deviations:
 - Scene preset assignments live in the browser (localStorage), not on the server.
 
 Test status: server 242/242, client 130/130, Pester 62/62.
+
+---
+
+## Final summary (end of the autonomous build, 2026-11-24)
+
+All phases in scope (0a, 1–6) are built, tested and pushed to `version_2_dev`. Phase 7 (cloud
+providers) is on hold, as decided: `provider: "openai-compat"` / `"anthropic"` report "planned for Phase 7"
+in the health status. Final test status: **server 242/242 (3 skipped as in Version 1), client 130/130,
+Pester 62/62** (including 6 Integration tests against real RawTherapee 5.10).
+
+Deliverables: `_development/Version_2_test_guide.md` (Windows checklist per feature) and
+`_development/v2_benchmark_findings.md` (Linux, not Windows).
+
+**Ready to test** (test guide sections in brackets):
+- Version 1 behaviour with nothing switched on (§1). Console output and CSV columns of the `.bat` path are unchanged
+  (events only with `-EmitEvents`).
+- Benchmark + gates on your machine with `scripts\bench_rt.ps1` (§2).
+- Preview cache that notices every input (§3). This fixes the Version 1 stale-tile bug.
+- Batched rendering with fault isolation, off by default (§4).
+- Scenes: Find scenes, Select scene, editor, per-scene presets + Queue all scenes (§5, §11.3).
+- AI correction with Ollama: toggle + strength, overlap with rendering, review/edit page, AI base tile,
+  LLM scene names, refine/harmonize/stats/burst/boundary check (§6–§11).
+
+**Untested on real Windows / real hardware** (only Linux + CPU here):
+- Everything in PowerShell 5.1 itself. The code avoids 7-only syntax, and the scripts and Pester suites ran
+  under pwsh 7 on Linux. The Windows-only parts (subfolder mirroring with `\`, `taskkill`, file locks during
+  batch progress, the stdout pipe behaviour) were reviewed but never executed.
+- RawTherapee **5.12** (here 5.10). In particular, whether `[White Balance] Equal` (warmth) and `Green` (tint)
+  behave the same, and the case C/X results.
+- Any GPU and any 4–9B model. The only real model run was `qwen3.5:2b` on CPU, which is too weak to judge the
+  AI gate. The before/after verdict, the input-image choice and the step-table calibration are yours (§7).
+- Performance numbers. Every Linux timing is indicative only.
+- `sharp` install on Windows (optional dependency, prebuilt binaries via npm).
+
+**Needs your decision:**
+1. **AI correction gate** (§7.2): keep `llm.enabled` available only if the before/after page looks better.
+2. **Batching** (§2/§4.7): Linux says NO-GO (0.2 % gain). Turn on only if your case C shows ≥ 10 %.
+3. **Step table:** two plan values were changed on measured evidence (warmth → `Equal`, tint sign).
+   The rest is uncalibrated until you calibrate it (§7.5).
+4. **Defaults of the AI-only quality features:** `burstReuse` and `scenes.harmonizeCorrections` are on
+   (they act only when AI is on); refine pass, histogram stats and boundary check are off. Confirm or
+   change them after §11.
+5. **Embedded vs draft input** (§7.3), and whether `progressSource: "stdout"` is worth switching to (§2.2).
+6. Whether to merge `version_2_dev` after your test (no pull request was opened, as asked).

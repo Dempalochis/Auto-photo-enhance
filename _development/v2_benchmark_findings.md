@@ -144,3 +144,16 @@ the ~900 px draft render whenever a render slot is free.
 Ran on `_samples/`: 8 unrelated photos → 7 segments (the two A7S frames 8 s apart group
 together, everything else splits on huge time gaps). Correct, but meaningless as a check: real
 shoots are needed. That comparison is Phase 0b (test guide §4).
+
+## Later Linux observations (Phases 4–6, still not Windows)
+
+- **Real AI run** through the app (`qwen3.5:2b`, CPU, `inputImage: auto` → embedded JPEG during a run):
+  73–78 s per analysis. Photo 2 was analysed while photo 1 rendered (the overlap works). Both rendered with
+  their overlays, named `_ai`.
+- **Overlay validity:** RawTherapee **rejects the whole profile** if an integer key gets a fraction
+  (`HighlightCompr=34.5`, from strength 1.5). Integer keys are now rounded, and an Integration test renders
+  every step at ±2 for every strength against the real CLI.
+- **Batch mode with real RawTherapee:** progress events arrived during the batch in both progress modes,
+  a truncated file was retried alone and quarantined on the 2nd run, and the temp folder was cleaned up.
+- **Histogram stats** (`sharp` 0.34.5) on a draft render of the A7S sky shot: 36.8 % clipped highlights,
+  mean luminance 135. Plausible for a bright sky, but whether it helps the model needs a real model (§11.4 of the test guide).
