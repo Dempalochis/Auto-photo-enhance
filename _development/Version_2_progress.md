@@ -9,7 +9,7 @@ One entry per phase: what was done, what was skipped and why, deviations from th
 | 0a Measure tooling + Linux behaviour checks | ✅ done (2026-11-24) |
 | 1 Pipeline foundations | ✅ done (2026-11-24) |
 | 2 Batched rendering + fault isolation | ✅ built, **off by default** (Linux gate: NO-GO) |
-| 3 Scene grouping (no LLM) | ⬜ not started |
+| 3 Scene grouping (no LLM) | ✅ done (2026-11-24) |
 | 4 LLM core + AI correction | ⬜ not started |
 | 5 LLM scenes + review UI | ⬜ not started |
 | 6 Quality | ⬜ not started |
@@ -146,3 +146,36 @@ Deviations / notes:
 
 Test status at the end of Phase 2: server 209/209 (3 skipped as before), client 105/105, Pester 55/55
 (incl. 5 Integration tests against real RawTherapee 5.10).
+
+## Phase 3: scene grouping without the LLM ✅
+
+Done:
+- `captureDates.js`: the same batched `exiftool -j -n` call reads ISO, ExposureTime, FNumber, Flash,
+  Model (`getPhotoMetadata`); `getCaptureDates` keeps its Version 1 contract. `/api/photos` entries
+  gain `iso/exposureTime/fNumber/flash/model` (extra fields only).
+- `sceneSegmenter.js` (built in 0a): time gap, EV100 jump, flash on/off, camera change. Crosses midnight.
+  Names like `14:05–14:40 · 23 photos`.
+- `scenesStore.js`: `.webapp_cache/scenes/<folder>_<hash>.json`, written atomically. Incremental:
+  only days with added/removed/replaced photos (size+mtime) are regrouped. All days are regrouped
+  on first run, on changed options, or with `force`. Scenes with `source: "edited"` are never
+  regrouped/renamed, only lose vanished photos. Deterministic scene ids. Pure edit ops: rename,
+  merge (neighbours only), split after a photo, move photos.
+- Endpoints: `GET /api/scenes`, `POST /api/scenes/detect {days?, force?}` (new `scenes` job lane),
+  `PATCH /api/scenes/:id`, `POST /api/scenes/merge`, `POST /api/scenes/:id/split`, `POST /api/scenes/move`.
+- Picker: **Group by: Date | Scene** switch (remembered). Scene view = day → scene → photos, the day
+  headers keep "Select day". `SceneHeader`: thumbnail strip, name, how it was grouped, **Select scene**.
+  "Ungrouped" bucket for photos in no scene. **Find scenes** button (only the filtered days when a date
+  filter is set). Search matches scene names (and Phase 5 captions). Selecting a scene with an empty
+  project name names the project after the scene. Job queue labels for `scenes`/`analyze` jobs.
+- `config.example.json`: `scenes` block (`maxGapMinutes` 10, `evJumpThreshold` 3, `splitByCamera`
+  true, `useLlm` true, `harmonizeCorrections` true).
+- Tests: `scenesStore.test.js` (9), `sceneSegmenter.test.js` (12), `sceneUtils.test.js` (7), picker
+  scene-view tests (4). Checked live: detect job, rename, merge refusal for non-neighbours, merge,
+  screenshot of the scene view.
+
+Deviations:
+- The plan has "rename / merge / split / move" endpoints in Phase 3 but their UI in Phase 5. Built
+  as planned: endpoints now, the editor UI in Phase 5.
+- Scene view has no month level (plan: "day → scene → photos").
+
+Test status: server 221/221, client 116/116, Pester 55/55.

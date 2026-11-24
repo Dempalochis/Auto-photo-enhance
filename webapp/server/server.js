@@ -10,7 +10,8 @@ const {
 } = require('./jobQueue');
 const { runPowerShellScript } = require('./runner');
 const { extractThumbnail } = require('./thumbnails');
-const { getCaptureDates } = require('./captureDates');
+const { getPhotoMetadata } = require('./captureDates');
+const scenesStore = require('./scenesStore');
 const { makeStateStore } = require('./state');
 const { listDrives, getFreeSpaceBytes } = require('./drives');
 const {
@@ -139,17 +140,27 @@ async function listPhotos() {
   const walkMs = Date.now() - walkStart;
 
   const captureDatesStart = Date.now();
-  let dateMap = {};
+  // Version 2 Phase 3: the same batched exiftool read also returns ISO / shutter / aperture /
+  // flash / camera (for scene grouping). dateTaken is unchanged from Version 1.
+  let metaMap = {};
   if (cfg.exiftoolPath && fs.existsSync(cfg.exiftoolPath) && entries.length > 0) {
-    dateMap = await getCaptureDates(cfg.exiftoolPath, entries.map((e) => path.join(activePhotosDir, e.relPath)));
+    metaMap = await getPhotoMetadata(cfg.exiftoolPath, entries.map((e) => path.join(activePhotosDir, e.relPath)));
   }
   const captureDatesMs = Date.now() - captureDatesStart;
 
   const photos = entries
-    .map((e) => ({
-      ...e,
-      dateTaken: dateMap[path.resolve(activePhotosDir, e.relPath)] || new Date(e.mtime).toISOString().slice(0, 19),
-    }))
+    .map((e) => {
+      const m = metaMap[path.resolve(activePhotosDir, e.relPath)] || {};
+      return {
+        ...e,
+        dateTaken: m.dateTaken || new Date(e.mtime).toISOString().slice(0, 19),
+        iso: m.iso ?? null,
+        exposureTime: m.exposureTime ?? null,
+        fNumber: m.fNumber ?? null,
+        flash: m.flash ?? null,
+        model: m.model ?? null,
+      };
+    })
     .sort((a, b) => a.relPath.localeCompare(b.relPath));
 
   return { photos, timing: { fileCount: photos.length, walkMs, captureDatesMs } };
@@ -357,6 +368,78 @@ app.post('/api/preview', (req, res) => {
 
   res.json({ jobId: job.id });
 });
+
+// ---- Version 2 Phase 3: scenes (time/EXIF groups; Phase 5 refines them with the LLM) ----
+
+const scenesDir = path.join(cfg.stateDir, 'scenes');
+
+function scenesResponse(store, photos) {
+  return {
+    folder: activePhotosDir,
+    detectedAt: store.detectedAt,
+    scenes: store.scenes,
+    ungrouped: photos ? scenesStore.ungroupedPhotos(store, photos) : [],
+  };
+}
+
+app.get('/api/scenes', asyncHandler(async (req, res) => {
+  const store = scenesStore.readStore(scenesDir, activePhotosDir);
+  // Ungrouped needs the photo list; cheap enough without EXIF (relPaths only).
+  const { photos } = store.detectedAt ? await listPhotos() : { photos: [] };
+  res.json(scenesResponse(store, photos));
+}));
+
+// Queues a 'scenes' job: read metadata, segment changed days (+ LLM refinement in Phase 5).
+// Body: { days?: ['YYYY-MM-DD'], force?: true }.
+app.post('/api/scenes/detect', (req, res) => {
+  const { days, force } = req.body || {};
+  if (days !== undefined && (!Array.isArray(days) || !days.every((d) => /^\d{4}-\d{2}-\d{2}$/.test(d)))) {
+    return res.status(400).json({ error: 'days must be an array of YYYY-MM-DD strings' });
+  }
+  const folder = activePhotosDir;
+  const job = enqueue('scenes', async (job) => {
+    job.progress = { total: 3, items: [{ label: 'read metadata', status: 'running' }, { label: 'group', status: 'pending' }, { label: 'name', status: 'pending' }] };
+    const { photos } = await listPhotos();
+    job.progress.items[0].status = 'done';
+    job.progress.items[1].status = 'running';
+    const prev = scenesStore.readStore(scenesDir, folder);
+    const plan = scenesStore.planDetection(prev, photos, cfg.raw.scenes, { days, force: force === true });
+    job.progress.items[1].status = 'done';
+    job.progress.items[2].status = 'running';
+    const refined = await refineScenes(plan, photos, job);
+    const store = scenesStore.finalizeDetection(plan, refined.scenes, photos, folder);
+    scenesStore.writeStore(scenesDir, folder, store);
+    job.progress.items[2].status = 'done';
+    return {
+      sceneCount: store.scenes.length, affectedDays: plan.affectedDays, llm: refined.llm, notes: refined.notes,
+    };
+  }, { folder, days: days || null });
+  res.json({ jobId: job.id });
+});
+
+// Phase 3: code-only names. Phase 5 replaces this with the LLM merge/split/naming step.
+async function refineScenes(plan) {
+  return { scenes: scenesStore.autoScenesFromSegments(plan.segments), llm: 'off', notes: [] };
+}
+
+async function editScenes(req, res, op) {
+  const store = scenesStore.readStore(scenesDir, activePhotosDir);
+  const { photos } = await listPhotos();
+  const byRel = Object.fromEntries(photos.map((p) => [p.relPath, p]));
+  const result = op(store, byRel);
+  if (result.error) return res.status(result.error === 'scene not found' ? 404 : 400).json({ error: result.error });
+  scenesStore.writeStore(scenesDir, activePhotosDir, result.store);
+  return res.json(scenesResponse(result.store, photos));
+}
+
+app.patch('/api/scenes/:id', asyncHandler(async (req, res) => editScenes(req, res,
+  (store) => scenesStore.renameScene(store, req.params.id, req.body && req.body.name))));
+app.post('/api/scenes/merge', asyncHandler(async (req, res) => editScenes(req, res,
+  (store, byRel) => scenesStore.mergeScenes(store, req.body && req.body.ids, byRel))));
+app.post('/api/scenes/:id/split', asyncHandler(async (req, res) => editScenes(req, res,
+  (store, byRel) => scenesStore.splitScene(store, req.params.id, req.body && req.body.afterRelPath, byRel))));
+app.post('/api/scenes/move', asyncHandler(async (req, res) => editScenes(req, res,
+  (store, byRel) => scenesStore.moveToScene(store, req.body && req.body.relPaths, req.body && req.body.toId, byRel))));
 
 // ---- run: batch-convert selected files with color correction + chosen preset ----
 

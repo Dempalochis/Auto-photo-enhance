@@ -5,8 +5,10 @@ import * as Checkbox from '@radix-ui/react-checkbox';
 import { CheckIcon } from '@radix-ui/react-icons';
 import { useWindowVirtualizer } from '@tanstack/react-virtual';
 import { filterPhotos, groupByDate } from '../dateUtils';
+import { filterPhotosForScenes, groupByScene, daysOf } from '../sceneUtils';
 import { thumbnailUrl } from '../api';
 import Hint from './Hint';
+import SceneHeader from './SceneHeader';
 
 function formatSize(bytes) {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
@@ -154,9 +156,22 @@ function useColumnCount(thumbSize) {
 // react-window-style fixed-viewport panel would have been a real UX regression (double
 // scrollbars) rather than just a perf fix. Selection state itself was already O(1) (a Set) - the
 // cost was purely DOM node count, which this addresses directly.
-function useVirtualRows(months, columns) {
+function useVirtualRows(months, columns, sceneDays) {
   return useMemo(() => {
     const rows = [];
+    // Version 2 Phase 3: scene view = day -> scene -> photos (no month level).
+    if (sceneDays) {
+      for (const day of sceneDays) {
+        rows.push({ type: 'day', key: `day-${day.key}`, day });
+        for (const group of day.scenes) {
+          rows.push({ type: 'scene', key: `scene-${day.key}-${group.key}`, group });
+          for (let i = 0; i < group.photos.length; i += columns) {
+            rows.push({ type: 'photos', key: `${group.key}-row-${i}`, photos: group.photos.slice(i, i + columns) });
+          }
+        }
+      }
+      return rows;
+    }
     for (const month of months) {
       rows.push({ type: 'month', key: `month-${month.key}`, month });
       for (const day of month.days) {
@@ -167,28 +182,41 @@ function useVirtualRows(months, columns) {
       }
     }
     return rows;
-  }, [months, columns]);
+  }, [months, columns, sceneDays]);
 }
 
 const THUMB_SIZE_KEY = 'ape.thumbSize';
+const GROUP_BY_KEY = 'ape.groupBy';
 
 export default function PhotoPicker({
   photos, loading, selected, onToggle, onSelectMany, onPreview, previewPhoto, previewStarting,
+  // Version 2 Phase 3 (all optional: without them the picker is exactly Version 1's date view)
+  scenes = null, onFindScenes = null, scenesStatus = null, onSceneSelected = null, sceneActions = null,
 }) {
   const [search, setSearch] = useState('');
   const [minDate, setMinDate] = useState('');
   const [maxDate, setMaxDate] = useState('');
   const [sortOrder, setSortOrder] = useState('newest');
   const [thumbSize, setThumbSize] = useState(() => localStorage.getItem(THUMB_SIZE_KEY) || 'comfortable');
+  const scenesEnabled = Array.isArray(scenes) || typeof onFindScenes === 'function';
+  const [groupBy, setGroupBy] = useState(() => (localStorage.getItem(GROUP_BY_KEY) === 'scene' ? 'scene' : 'date'));
+  const sceneMode = scenesEnabled && groupBy === 'scene';
 
   useEffect(() => { localStorage.setItem(THUMB_SIZE_KEY, thumbSize); }, [thumbSize]);
+  useEffect(() => { localStorage.setItem(GROUP_BY_KEY, groupBy); }, [groupBy]);
 
-  const filtered = useMemo(() => filterPhotos(photos, { search, minDate, maxDate }), [photos, search, minDate, maxDate]);
-  const months = useMemo(() => groupByDate(filtered, sortOrder), [filtered, sortOrder]);
+  const filtered = useMemo(
+    () => (sceneMode
+      ? filterPhotosForScenes(photos, scenes || [], { search, minDate, maxDate })
+      : filterPhotos(photos, { search, minDate, maxDate })),
+    [photos, scenes, sceneMode, search, minDate, maxDate],
+  );
+  const months = useMemo(() => (sceneMode ? [] : groupByDate(filtered, sortOrder)), [filtered, sortOrder, sceneMode]);
+  const sceneDays = useMemo(() => (sceneMode ? groupByScene(filtered, scenes || [], sortOrder) : null), [filtered, scenes, sortOrder, sceneMode]);
   const allVisibleSelected = filtered.length > 0 && filtered.every((p) => selected.has(p.relPath));
 
   const columns = useColumnCount(thumbSize);
-  const rows = useVirtualRows(months, columns);
+  const rows = useVirtualRows(months, columns, sceneDays);
 
   const listRef = useRef(null);
   const listOffsetRef = useRef(0);
@@ -199,7 +227,7 @@ export default function PhotoPicker({
   const rowHeight = thumbSize === 'compact' ? 150 : 250; // estimate only - measureElement corrects per-row
   const virtualizer = useWindowVirtualizer({
     count: rows.length,
-    estimateSize: (i) => (rows[i].type === 'photos' ? rowHeight : 40),
+    estimateSize: (i) => (rows[i].type === 'photos' ? rowHeight : (rows[i].type === 'scene' ? 48 : 40)),
     overscan: 6,
     scrollMargin: listOffsetRef.current,
     getItemKey: (i) => rows[i].key,
@@ -214,7 +242,7 @@ export default function PhotoPicker({
 
       <div className="panel p-3 mb-4 flex flex-wrap items-end gap-3">
         <div className="flex-1 min-w-[160px]">
-          <label className="field-label block mb-1">Search filename</label>
+          <label className="field-label block mb-1">{sceneMode ? 'Search filename or scene' : 'Search filename'}</label>
           <input
             type="text"
             value={search}
@@ -260,6 +288,30 @@ export default function PhotoPicker({
             </button>
           </div>
         </Hint>
+        {scenesEnabled && (
+          <Hint text="Date: month -> day. Scene: day -> scene, groups of photos taken together (time gaps, light changes, flash, camera).">
+            <div className="flex gap-1.5" role="group" aria-label="Group by">
+              <button type="button" onClick={() => setGroupBy('date')} className={`btn-secondary text-xs px-2.5 py-1.5 ${groupBy === 'date' ? 'active' : ''}`}>
+                Date
+              </button>
+              <button type="button" onClick={() => setGroupBy('scene')} className={`btn-secondary text-xs px-2.5 py-1.5 ${groupBy === 'scene' ? 'active' : ''}`}>
+                Scene
+              </button>
+            </div>
+          </Hint>
+        )}
+        {sceneMode && onFindScenes && (
+          <Hint text={minDate || maxDate ? 'Groups the days in the current date filter into scenes.' : 'Groups every day in this folder into scenes. Days already grouped are only redone if photos changed.'}>
+            <button
+              type="button"
+              disabled={scenesStatus === 'running'}
+              onClick={() => onFindScenes(minDate || maxDate ? daysOf(filtered) : null)}
+              className="btn-secondary text-xs px-2.5 py-1.5"
+            >
+              {scenesStatus === 'running' ? 'Finding scenes…' : 'Find scenes'}
+            </button>
+          </Hint>
+        )}
         <button
           type="button"
           onClick={() => onSelectMany(filtered.map((p) => p.relPath), !allVisibleSelected)}
@@ -273,6 +325,12 @@ export default function PhotoPicker({
           </button>
         )}
       </div>
+
+      {sceneMode && !loading && Array.isArray(scenes) && scenes.length === 0 && (
+        <p className="text-xs text-[var(--text-dim)] mb-3">
+          No scenes yet for this folder - click <span className="text-[var(--text)]">Find scenes</span> to group photos taken together.
+        </p>
+      )}
 
       {loading ? (
         <div className="flex flex-col items-center justify-center gap-3 py-16 text-[var(--text-dim)]">
@@ -305,6 +363,15 @@ export default function PhotoPicker({
               >
                 {row.type === 'month' && <MonthHeader month={row.month} selected={selected} onSelectMany={onSelectMany} />}
                 {row.type === 'day' && <DayHeader day={row.day} selected={selected} onSelectMany={onSelectMany} />}
+                {row.type === 'scene' && (
+                  <SceneHeader
+                    group={row.group}
+                    selected={selected}
+                    onSelectMany={onSelectMany}
+                    onSceneSelected={onSceneSelected}
+                    actions={sceneActions ? sceneActions(row.group) : null}
+                  />
+                )}
                 {row.type === 'photos' && (
                   <PhotoRow
                     photos={row.photos}

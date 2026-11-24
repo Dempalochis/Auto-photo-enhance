@@ -53,6 +53,8 @@ function isRetryable(job) {
 function jobLabel(job) {
   if (job.type === 'run') return job.meta?.projectName || 'Batch run';
   if (job.type === 'preview') return `Preview: ${job.meta?.photo || '…'}`;
+  if (job.type === 'scenes') return 'Find scenes';
+  if (job.type === 'analyze') return `AI analysis${job.meta?.purpose === 'run' ? ` for ${job.meta?.projectName || 'run'}` : ''}`;
   return job.type;
 }
 
@@ -60,8 +62,11 @@ function jobSubtitle(job) {
   if (job.type === 'run') {
     const count = job.meta?.photoCount ?? '?';
     const preset = job.meta?.preset && job.meta.preset !== 'none' ? job.meta.preset : 'color correction only';
-    return `${count} photo${count === 1 ? '' : 's'} · ${preset}`;
+    return `${count} photo${count === 1 ? '' : 's'} · ${preset}${job.meta?.aiCorrection ? ` · AI (${job.meta.aiStrength || 'normal'})` : ''}`;
   }
+  // Version 2: scene detection and AI analysis jobs.
+  if (job.type === 'scenes') return job.meta?.days ? `Groups ${job.meta.days.length} day(s) into scenes` : 'Groups this folder into scenes';
+  if (job.type === 'analyze') return `${job.meta?.photoCount ?? '?'} photo(s) · ${job.meta?.model || 'LLM'}`;
   return 'Renders base + all preset looks for one photo';
 }
 

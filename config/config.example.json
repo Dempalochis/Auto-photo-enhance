@@ -16,5 +16,12 @@
   "batchRender": false,
   "maxBatchSize": 20,
   "maxCommandChars": 16000,
-  "progressSource": "outputFolder"
+  "progressSource": "outputFolder",
+  "scenes": {
+    "maxGapMinutes": 10,
+    "evJumpThreshold": 3,
+    "splitByCamera": true,
+    "useLlm": true,
+    "harmonizeCorrections": true
+  }
 }

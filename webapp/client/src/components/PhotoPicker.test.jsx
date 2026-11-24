@@ -121,3 +121,50 @@ describe('PhotoPicker', () => {
     expect(onSelectMany.mock.calls[0][0]).toHaveLength(1); // exactly one day's worth
   });
 });
+
+describe('PhotoPicker - Version 2 scene view', () => {
+  const scenes = [
+    { id: 's1', name: 'Harbour at dusk', photos: ['DSC00001.ARW', 'DSC00002.ARW'], start: '2026-08-15T10:00:00', end: '2026-08-15T10:00:00' },
+  ];
+
+  test('without scene props there is no Date/Scene switch (Version 1 picker)', () => {
+    renderPicker([makePhoto(1)]);
+    expect(screen.queryByRole('group', { name: 'Group by' })).not.toBeInTheDocument();
+  });
+
+  test('Scene view shows scene headers; Select scene selects exactly that scene and reports it', async () => {
+    localStorage.removeItem('ape.groupBy');
+    const user = userEvent.setup();
+    const onSceneSelected = vi.fn();
+    const photos = [makePhoto(1), makePhoto(2), makePhoto(3)];
+    const { onSelectMany } = renderPicker(photos, { scenes, onFindScenes: vi.fn(), onSceneSelected });
+    await user.click(screen.getByRole('button', { name: 'Scene' }));
+    expect(screen.getByText('Harbour at dusk')).toBeInTheDocument();
+    expect(screen.getByText('Not in a scene yet')).toBeInTheDocument(); // DSC00003 is ungrouped
+    await user.click(screen.getAllByRole('button', { name: 'Select scene' })[0]);
+    expect(onSelectMany).toHaveBeenCalledWith(['DSC00001.ARW', 'DSC00002.ARW'], true);
+    expect(onSceneSelected).toHaveBeenCalledWith(scenes[0]);
+    localStorage.removeItem('ape.groupBy');
+  });
+
+  test('Find scenes calls back (all days when no date filter)', async () => {
+    const user = userEvent.setup();
+    const onFindScenes = vi.fn();
+    renderPicker([makePhoto(1)], { scenes: [], onFindScenes });
+    await user.click(screen.getByRole('button', { name: 'Scene' }));
+    expect(screen.getByText(/No scenes yet/)).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'Find scenes' }));
+    expect(onFindScenes).toHaveBeenCalledWith(null);
+    localStorage.removeItem('ape.groupBy');
+  });
+
+  test('search in scene view also matches scene names', async () => {
+    const user = userEvent.setup();
+    renderPicker([makePhoto(1), makePhoto(2), makePhoto(3)], { scenes, onFindScenes: vi.fn() });
+    await user.click(screen.getByRole('button', { name: 'Scene' }));
+    await user.type(screen.getByPlaceholderText('DSC00600…'), 'harbour');
+    expect(screen.getByText('DSC00001.ARW')).toBeInTheDocument();
+    expect(screen.queryByText('DSC00003.ARW')).not.toBeInTheDocument();
+    localStorage.removeItem('ape.groupBy');
+  });
+});

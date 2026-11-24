@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import * as Tooltip from '@radix-ui/react-tooltip';
 import {
-  getPhotos, getPresets, getSourceFolder, setSourceFolder, startPreview, startRun,
+  getPhotos, getPresets, getSourceFolder, setSourceFolder, startPreview, startRun, getScenes, detectScenes,
 } from './api';
 import { useJob } from './useJob';
 import SourceFolderPicker from './components/SourceFolderPicker';
@@ -38,6 +38,11 @@ export default function App() {
   const [runStarting, setRunStarting] = useState(false);
 
   const previewJob = useJob(previewJobId);
+  // Version 2 Phase 3: scene groups for the active folder + the "Find scenes" job.
+  const [scenes, setScenes] = useState([]);
+  const [scenesJobId, setScenesJobId] = useState(null);
+  const scenesJob = useJob(scenesJobId);
+  const refreshScenes = () => getScenes().then((r) => setScenes(r.scenes || [])).catch(() => setScenes([]));
   // Run jobs are no longer tracked by a single client-side ID - the JobQueuePanel polls the
   // server's job list directly, which is what lets Run stay usable for queuing another batch
   // instead of waiting on the previous one (see JobQueuePanel.jsx).
@@ -53,7 +58,30 @@ export default function App() {
       })
       .catch((err) => setLoadError(err.message))
       .finally(() => setPhotosLoading(false));
+    refreshScenes();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // Reload the scene list once a "Find scenes" job finishes.
+  useEffect(() => {
+    if (scenesJob && scenesJob.status === 'done') { refreshScenes(); setScenesJobId(null); }
+    if (scenesJob && scenesJob.status === 'error') { setLoadError(`Find scenes failed: ${scenesJob.error}`); setScenesJobId(null); }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [scenesJob && scenesJob.status]);
+
+  const handleFindScenes = async (days) => {
+    try {
+      const { jobId } = await detectScenes(days);
+      setScenesJobId(jobId);
+    } catch (err) {
+      setLoadError(err.message);
+    }
+  };
+
+  // Selecting a whole scene with no project name typed yet names the project after the scene.
+  const handleSceneSelected = (scene) => {
+    if (!projectName.trim() && scene && scene.name) setProjectName(scene.name);
+  };
 
   useEffect(() => { localStorage.setItem(PROJECT_NAME_KEY, projectName); }, [projectName]);
   useEffect(() => { localStorage.setItem(PRESET_KEY, selectedPreset); }, [selectedPreset]);
@@ -97,6 +125,7 @@ export default function App() {
       setSelected(new Set());
       setPreviewPhoto(null);
       setPreviewJobId(null);
+      refreshScenes();
     } catch (err) {
       setFolderError(err.message);
     } finally {
@@ -191,6 +220,10 @@ export default function App() {
                 onPreview={handlePreview}
                 previewPhoto={previewPhoto}
                 previewStarting={previewStarting}
+                scenes={scenes}
+                onFindScenes={handleFindScenes}
+                scenesStatus={scenesJobId ? 'running' : 'idle'}
+                onSceneSelected={handleSceneSelected}
               />
             </div>
             <PresetPreview
